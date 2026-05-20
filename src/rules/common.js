@@ -1,0 +1,97 @@
+/** @type {Array<{
+ *   id: string,
+ *   severity: string,
+ *   category: string,
+ *   description: string,
+ *   language: string,
+ *   pattern: string,
+ *   antiPattern: string|null,
+ *   filePattern: string,
+ *   exclude: string[],
+ *   suggestion: string,
+ *   fixable: boolean
+ * }>}
+ */
+const rules = [
+  {
+    id: 'magic-number',
+    severity: 'low',
+    category: 'hardcoded-magic-values',
+    description: 'Numeric literals (other than 0, 1, -1) used directly in logic instead of named constants',
+    language: 'common',
+    pattern: '(?<![a-zA-Z0-9_.])(?<!-)[2-9]\\d+\\b|(?<![a-zA-Z0-9_.])[1-9]\\d{2,}\\b',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx,go,py,cs,java}',
+    exclude: [
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/*_test.go',
+      '**/*.min.js',
+      '**/vendor/**',
+      '**/node_modules/**',
+    ],
+    suggestion: 'Extract magic numbers into named constants (e.g. const MAX_RETRIES = 3) to improve readability and maintainability.',
+    fixable: false,
+  },
+  {
+    id: 'long-file',
+    severity: 'medium',
+    category: 'long-files',
+    description: 'File exceeds 300 lines — a common sign of a class or module doing too much',
+    language: 'common',
+    // Pattern is a line-count sentinel; the runner uses wc -l and compares against threshold
+    pattern: '^.{0}$',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx,go,py,cs,java}',
+    exclude: [
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/*_test.go',
+      '**/*.min.js',
+      '**/vendor/**',
+      '**/node_modules/**',
+      '**/*.generated.*',
+      '**/*.pb.go',
+    ],
+    suggestion: 'Split the file into smaller, focused modules. Files over 300 lines often indicate a violation of the Single Responsibility Principle.',
+    fixable: false,
+  },
+  {
+    id: 'ai-step-comment',
+    severity: 'low',
+    category: 'comment-quality',
+    description: 'AI-generated step comments like "Step 1:", "// 1.", "# Step X:" that narrate code instead of explaining intent',
+    language: 'common',
+    pattern: '(?:^|\\s)(?://|#|/\\*)\\s*(?:step\\s+\\d+|\\d+\\.\\s+\\w)',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx,go,py,cs,java}',
+    exclude: [
+      '**/node_modules/**',
+      '**/vendor/**',
+    ],
+    suggestion: 'Replace procedural step comments with explanatory comments that describe WHY, not WHAT. Consider restructuring with well-named functions instead.',
+    fixable: false,
+  },
+  {
+    id: 'repeated-string-literal',
+    severity: 'medium',
+    category: 'hardcoded-magic-values',
+    description: 'The same string literal appears multiple times — a candidate for extraction into a named constant',
+    language: 'common',
+    // Matches double-quoted or single-quoted strings of 4+ characters
+    pattern: '(?:"[^"]{4,}"|\'[^\'{]{4,}\')',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx,go,py,cs,java}',
+    exclude: [
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/*_test.go',
+      '**/node_modules/**',
+      '**/vendor/**',
+    ],
+    suggestion: 'Extract repeated string literals into named constants or enums so changes only need to be made in one place.',
+    fixable: false,
+  },
+];
+
+export default rules;
