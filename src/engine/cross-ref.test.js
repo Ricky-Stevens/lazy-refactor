@@ -149,9 +149,12 @@ describe('extractImports — TypeScript', () => {
     expect(result).toContain('fs');
   });
 
-  it('handles aliased imports', () => {
+  it('handles aliased imports — records exported name (not local alias) for cross-ref matching', () => {
+    // extractImports is used for dead-code cross-referencing; we need the exported name
+    // so it can be matched against exports from other files.
     const result = extractImports("import { Component as Comp } from 'framework';", 'typescript');
-    expect(result).toContain('Comp');
+    expect(result).toContain('Component');
+    expect(result).not.toContain('Comp');
   });
 });
 
@@ -517,6 +520,31 @@ describe('scanUnusedImports — Java', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 1 — extractImports alias bug: import { foo as bar } records exported name
+// ---------------------------------------------------------------------------
+
+describe('extractImports — TypeScript alias handling (exported name)', () => {
+  it('records the exported name, not the local alias', () => {
+    const result = extractImports("import { foo as bar } from './module';", 'typescript');
+    // For dead-code cross-referencing we need the exported name ("foo")
+    expect(result).toContain('foo');
+    expect(result).not.toContain('bar');
+  });
+
+  it('records both exported names when multiple aliased imports are present', () => {
+    const result = extractImports(
+      "import { alpha as a, beta as b, gamma } from './module';",
+      'typescript'
+    );
+    expect(result).toContain('alpha');
+    expect(result).toContain('beta');
+    expect(result).toContain('gamma');
+    expect(result).not.toContain('a');
+    expect(result).not.toContain('b');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fix 4 — scanInconsistentPatterns
 // ---------------------------------------------------------------------------
 
@@ -578,6 +606,107 @@ describe('scanInconsistentPatterns', () => {
         expect(typeof approach.count).toBe('number');
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3 — scanInconsistentPatterns word-boundary guard
+// ---------------------------------------------------------------------------
+
+describe('scanInconsistentPatterns — no false positives on substring matches', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'patterns-wordboundary-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('does not classify files as logging concern when "log" only appears inside "dialog"', async () => {
+    const subDir = join(dir, 'substring-log');
+    await mkdir(subDir, { recursive: true });
+    // "dialog" contains "log" as substring but is not a logging keyword
+    await writeFile(join(subDir, 'a.js'), "function openDialog() { return dialog.show(); }");
+    await writeFile(join(subDir, 'b.js'), "const catalog = getCatalog();");
+    await writeFile(join(subDir, 'c.js'), "const blog = getBlog();");
+
+    const findings = await scanInconsistentPatterns(subDir, {});
+    const loggingFindings = findings.filter((f) => f.concern === 'logging');
+    expect(loggingFindings).toHaveLength(0);
+  });
+
+  it('does not classify files as config concern when "config" only appears inside "reconfigure"', async () => {
+    const subDir = join(dir, 'substring-config');
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, 'a.js'), "function reconfigure() {}");
+    await writeFile(join(subDir, 'b.js'), "function misconfiguration() {}");
+
+    const findings = await scanInconsistentPatterns(subDir, {});
+    const configFindings = findings.filter((f) => f.concern === 'config');
+    expect(configFindings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — scanOverEngineering zero-importer pre-filter
+// ---------------------------------------------------------------------------
+
+describe('scanOverEngineering — zero-importer files are skipped for pass-through check', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'over-eng-fanin-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('does not flag a pass-through file that has zero importers (dead code territory)', async () => {
+    const subDir = join(dir, 'zero-fanin-passthrough');
+    await mkdir(subDir, { recursive: true });
+
+    // A file full of pass-through functions but nobody imports it
+    await writeFile(
+      join(subDir, 'wrapper.js'),
+      [
+        'export function wrapFoo(x) { return realFoo(x); }',
+        'export function wrapBar(x) { return realBar(x); }',
+        'export function wrapBaz(x) { return realBaz(x); }',
+      ].join('\n')
+    );
+    // Another file that doesn't import wrapper — so fan-in stays 0
+    await writeFile(join(subDir, 'other.js'), "export function standalone() { return 1; }");
+
+    const findings = await scanOverEngineering(subDir, {});
+    const passThroughFindings = findings.filter(
+      (f) => f.file.endsWith('wrapper.js') && f.issue.includes('pass-through')
+    );
+    expect(passThroughFindings).toHaveLength(0);
+  });
+
+  it('does not flag single-method class when file has zero importers', async () => {
+    const subDir = join(dir, 'zero-fanin-class');
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, 'orphan.ts'),
+      [
+        'export class OrphanWrapper {',
+        '  constructor(private val: string) {}',
+        '  getValue() { return this.val; }',
+        '}',
+      ].join('\n')
+    );
+    // No other file imports OrphanWrapper, so fan-in = 0
+
+    const findings = await scanOverEngineering(subDir, {});
+    const classFindings = findings.filter(
+      (f) => f.symbol === 'OrphanWrapper' && f.issue.includes('Single-method class')
+    );
+    expect(classFindings).toHaveLength(0);
   });
 });
 

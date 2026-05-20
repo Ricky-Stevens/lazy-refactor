@@ -222,7 +222,8 @@ export function extractImports(content, language) {
       const named = trimmed.match(/^import\s+\{([^}]+)\}\s+from/);
       if (named) {
         for (const sym of named[1].split(',')) {
-          const name = sym.trim().split(/\s+as\s+/).pop().trim();
+          const parts = sym.trim().split(/\s+as\s+/);
+          const name = parts[0].trim(); // exported name, not the local alias
           if (name) imports.push(name);
         }
         continue;
@@ -723,8 +724,9 @@ export async function scanInconsistentPatterns(path, options = {}) {
         continue;
       }
 
-      // Only care about files that mention at least one concern keyword
-      const hasConcern = keywords.some((kw) => content.includes(kw));
+      // Only care about files that mention at least one concern keyword (word-boundary to avoid
+      // substring false-positives like "log" matching "dialog" or "catalog")
+      const hasConcern = keywords.some((kw) => new RegExp('\\b' + kw + '\\b').test(content));
       if (!hasConcern) continue;
 
       for (const { pattern, re } of approachPatterns[concern] ?? []) {
@@ -823,9 +825,9 @@ export async function scanOverEngineering(path, options = {}) {
     if (isTestFile(file) || isEntryPoint(file)) continue;
     const language = fileLanguages.get(file);
 
-    // Low fan-in check (imported by 0–2 other files)
+    // Low fan-in check (imported by 1–2 other files; 0 = dead code, handled by Check 1)
     const fi = fanIn.get(file) ?? 0;
-    const isLowFanIn = fi <= 2;
+    const isLowFanIn = fi >= 1 && fi <= 2;
 
     // Pass-through / delegation functions
     if (isLowFanIn) {
@@ -841,8 +843,8 @@ export async function scanOverEngineering(path, options = {}) {
       }
     }
 
-    // Single-method classes (TypeScript/JS only)
-    if (language === 'typescript') {
+    // Single-method classes and single-impl interfaces — only flag at low fan-in
+    if (language === 'typescript' && isLowFanIn) {
       let classMatch;
       classRe.lastIndex = 0;
       while ((classMatch = classRe.exec(content)) !== null) {
