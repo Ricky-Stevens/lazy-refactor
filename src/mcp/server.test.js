@@ -391,3 +391,55 @@ describe('run_scan integration', () => {
     expect(summary.bySeverity['medium']).toBe(1);
   });
 });
+
+// ─── Rule shape validation ─────────────────────────────────────────────────────
+
+describe('rule shape validation', () => {
+  it('all rules used by scan_patterns have the required scan-rule fields', async () => {
+    // Import each rule file that buildRules() uses and verify they have the
+    // correct shape: {id, pattern, filePattern, severity, ...}.
+    // This guards against accidentally merging outdated-patterns (which has a
+    // different shape: {from, to, detectPattern, ...}) into the rules array.
+    const requiredFields = ['id', 'pattern', 'filePattern', 'severity'];
+
+    const ruleModules = await Promise.all([
+      import('../rules/common.js'),
+      import('../rules/typescript.js'),
+      import('../rules/go.js'),
+      import('../rules/python.js'),
+      import('../rules/csharp.js'),
+      import('../rules/java.js'),
+    ]);
+
+    for (const mod of ruleModules) {
+      const rules = mod.default;
+      expect(Array.isArray(rules)).toBe(true);
+      for (const rule of rules) {
+        for (const field of requiredFields) {
+          expect(rule).toHaveProperty(field);
+        }
+        // Ensure outdated-pattern shape (detectPattern / from / to) is not present
+        expect(rule).not.toHaveProperty('detectPattern');
+        expect(rule).not.toHaveProperty('from');
+      }
+    }
+  });
+
+  it('outdated-patterns module exports a language-keyed object, not an array', async () => {
+    const mod = await import('../rules/outdated-patterns.js');
+    const outdated = mod.default;
+    // Must be a plain object (Record<language, Array<...>>), not an array —
+    // confirms it cannot be spread into a scan-rules array.
+    expect(typeof outdated).toBe('object');
+    expect(Array.isArray(outdated)).toBe(false);
+    // Each language key must be an array of migration entries
+    for (const key of Object.keys(outdated)) {
+      expect(Array.isArray(outdated[key])).toBe(true);
+      for (const entry of outdated[key]) {
+        expect(entry).toHaveProperty('from');
+        expect(entry).toHaveProperty('to');
+        expect(entry).toHaveProperty('detectPattern');
+      }
+    }
+  });
+});
