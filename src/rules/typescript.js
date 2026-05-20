@@ -36,7 +36,7 @@ const rules = [
     category: 'debugging-leftovers',
     description: 'console.log / console.debug / console.info left in production code',
     language: 'typescript',
-    pattern: 'console\\.(?:log|debug|info)\\s*\\(',
+    pattern: 'console\\.(?:log|debug|info|warn)\\s*\\(',
     antiPattern: null,
     filePattern: '**/*.{ts,tsx,js,jsx}',
     exclude: [

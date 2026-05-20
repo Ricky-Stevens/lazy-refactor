@@ -111,6 +111,22 @@ const rules = [
     fixable: false,
   },
   {
+    id: 'log-println-debug-go',
+    severity: 'medium',
+    category: 'debugging-leftovers',
+    description: 'log.Print* used for debug output — should be replaced with structured logging',
+    language: 'go',
+    pattern: 'log\\.(?:Print|Println|Printf)\\s*\\(',
+    antiPattern: 'log/slog|go\\.uber\\.org/zap|sirupsen/logrus',
+    filePattern: '**/*.go',
+    exclude: [
+      '**/*_test.go',
+      '**/vendor/**',
+    ],
+    suggestion: 'Use structured logging instead of log.Print',
+    fixable: false,
+  },
+  {
     id: 'open-without-defer-close-go',
     severity: 'high',
     category: 'resource-management',
