@@ -115,6 +115,13 @@ describe('detectLanguages', () => {
     expect(result.languages).toContain('python');
   });
 
+  it('detects python from setup.py', async () => {
+    await writeFile(join(dir, 'setup.py'), 'from setuptools import setup\nsetup(name="myapp")\n');
+    const result = await detectLanguages(dir);
+    expect(result.languages).toContain('python');
+    expect(result.markers['setup.py']).toBe(true);
+  });
+
   it('returns empty languages for an empty directory', async () => {
     const result = await detectLanguages(dir);
     expect(result.languages).toEqual([]);
@@ -499,6 +506,82 @@ describe('checkOutdatedDeps', () => {
     await writeFile(join(dir, 'main.go'), 'package main\n\nimport "os"\n\nfunc main() { os.ReadFile("x") }\n');
     const findings = await checkOutdatedDeps(dir, ['go']);
     expect(findings.length).toBe(0);
+  });
+
+  it('detects deprecated C# usage via source file pattern', async () => {
+    // WebClient is a stdlib type — detected via detectPattern in .cs source
+    await writeFile(join(dir, 'MyApp.csproj'), '<Project Sdk="Microsoft.NET.Sdk"></Project>');
+    await writeFile(join(dir, 'Program.cs'), 'using System.Net;\n\nvar wc = new WebClient();\n');
+    const findings = await checkOutdatedDeps(dir, ['csharp']);
+    const match = findings.find((f) => f.from === 'WebClient');
+    expect(match).toBeDefined();
+    expect(match.check).toBe('outdated-pattern');
+    expect(match.category).toBe('outdated');
+    expect(match.severity).toBe('medium');
+  });
+
+  it('emits no C# findings when source files do not match any detectPattern', async () => {
+    await writeFile(join(dir, 'MyApp.csproj'), '<Project Sdk="Microsoft.NET.Sdk"></Project>');
+    await writeFile(join(dir, 'Program.cs'), 'using System;\n\nConsole.WriteLine("hello");\n');
+    const findings = await checkOutdatedDeps(dir, ['csharp']);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('detects deprecated Java usage via source file pattern', async () => {
+    // java.util.Date — detected via detectPattern in .java source
+    await writeFile(join(dir, 'pom.xml'), '<project><modelVersion>4.0.0</modelVersion><artifactId>myapp</artifactId></project>');
+    await writeFile(join(dir, 'Main.java'), 'import java.util.Date;\npublic class Main { Date d = new Date(); }\n');
+    const findings = await checkOutdatedDeps(dir, ['java']);
+    const match = findings.find((f) => f.from === 'java.util.Date');
+    expect(match).toBeDefined();
+    expect(match.check).toBe('outdated-pattern');
+    expect(match.category).toBe('outdated');
+    expect(match.severity).toBe('medium');
+  });
+
+  it('emits no Java findings when source files do not match any detectPattern', async () => {
+    await writeFile(join(dir, 'pom.xml'), '<project><modelVersion>4.0.0</modelVersion></project>');
+    await writeFile(join(dir, 'Main.java'), 'import java.time.Instant;\npublic class Main { Instant t = Instant.now(); }\n');
+    const findings = await checkOutdatedDeps(dir, ['java']);
+    expect(findings).toHaveLength(0);
+  });
+});
+
+// ─── Source-level checks for Fix 4 (disabledChecks) and Fix 5 (*.generated.*) ─
+
+describe('server.js source checks', () => {
+  let serverSrc;
+
+  beforeEach(async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname } = await import('node:path');
+    serverSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), 'server.js'),
+      'utf8',
+    );
+  });
+
+  it('DEFAULT_CONFIG.exclude contains *.generated.*', () => {
+    expect(serverSrc).toContain("'*.generated.*'");
+  });
+
+  it('run_scan filters findings by disabledChecks before scoring', () => {
+    expect(serverSrc).toContain('disabledChecks');
+    expect(serverSrc).toContain('!config.disabledChecks.includes(f.check)');
+  });
+
+  it('computeMetrics call includes maxExportsPerFile and maxImportsPerFile', () => {
+    expect(serverSrc).toContain('maxExportsPerFile: config.thresholds.maxExportsPerFile');
+    expect(serverSrc).toContain('maxImportsPerFile: config.thresholds.maxImportsPerFile');
+  });
+
+  it('buildRules comment does not mention outdated-patterns', () => {
+    // Find the line containing the "Always includes" comment inside buildRules JSDoc
+    const lines = serverSrc.split('\n');
+    const alwaysLine = lines.find((l) => l.includes('Always includes'));
+    expect(alwaysLine).toBeDefined();
+    expect(alwaysLine).not.toContain('outdated-patterns');
   });
 });
 

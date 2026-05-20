@@ -54,7 +54,7 @@ const DEFAULT_CONFIG = {
     duplicateMinTokens: 50,
     duplicateSimilarity: 0.80,
   },
-  exclude: ['vendor/**', 'generated/**', 'node_modules/**', '.git/**'],
+  exclude: ['vendor/**', 'generated/**', '*.generated.*', 'node_modules/**', '.git/**'],
   disabledChecks: [],
   languages: 'auto',
 };
@@ -191,6 +191,11 @@ export async function detectLanguages(projectPath) {
     if (!languages.includes('python')) languages.push('python');
     markers['pyproject.toml'] = true;
   }
+  const setupPy = await tryRead('setup.py');
+  if (setupPy !== null) {
+    if (!languages.includes('python')) languages.push('python');
+    markers['setup.py'] = true;
+  }
 
   // C#: *.csproj or *.sln
   const csprojFiles = await findBySuffix('.csproj');
@@ -218,7 +223,7 @@ export async function detectLanguages(projectPath) {
 
 /**
  * Build the combined rule set for the detected languages.
- * Always includes common rules and outdated-patterns.
+ * Always includes common rules.
  * @param {string[]} languages
  * @returns {Array}
  */
@@ -332,6 +337,119 @@ export async function checkOutdatedDeps(projectPath, languages) {
           fixable: false,
           confidence: 0.7,
         });
+      }
+    }
+  }
+
+  // C#: scan *.csproj for PackageReference entries, and grep source for stdlib patterns
+  if (languages.includes('csharp')) {
+    const entries = outdatedPatterns['csharp'] ?? [];
+    if (entries.length > 0) {
+      // Collect .csproj file contents
+      let csprojContent = '';
+      try {
+        const rootEntries = await readdir(projectPath);
+        const csprojFiles = rootEntries.filter((e) => e.endsWith('.csproj'));
+        for (const f of csprojFiles) {
+          try { csprojContent += await readFile(join(projectPath, f), 'utf8'); } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+
+      // Collect all C# source file contents recursively
+      async function collectCsSources(dir) {
+        let contents = [];
+        try {
+          const items = await readdir(dir, { withFileTypes: true });
+          for (const item of items) {
+            const full = join(dir, item.name);
+            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'bin' && item.name !== 'obj') {
+              contents = contents.concat(await collectCsSources(full));
+            } else if (item.isFile() && item.name.endsWith('.cs')) {
+              try { contents.push(await readFile(full, 'utf8')); } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+        return contents;
+      }
+      const csSources = await collectCsSources(projectPath);
+      const combinedCsSource = csSources.join('\n');
+
+      for (const entry of entries) {
+        // Check manifest first (PackageReference Include="X")
+        const manifestPattern = new RegExp(`PackageReference\\s+Include\\s*=\\s*["']${entry.from.split(' ')[0]}["']`, 'i');
+        const sourcePattern = new RegExp(entry.detectPattern);
+        if (manifestPattern.test(csprojContent) || sourcePattern.test(combinedCsSource)) {
+          findings.push({
+            check: 'outdated-pattern',
+            severity: entry.severity,
+            category: 'outdated',
+            locations: [{ file: 'project', startLine: 1 }],
+            description: `Outdated usage '${entry.from}': ${entry.description}`,
+            from: entry.from,
+            to: entry.to,
+            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+            fixable: false,
+            confidence: 0.8,
+          });
+        }
+      }
+    }
+  }
+
+  // Java: scan pom.xml/build.gradle for dependency entries, and grep source for stdlib patterns
+  if (languages.includes('java')) {
+    const entries = outdatedPatterns['java'] ?? [];
+    if (entries.length > 0) {
+      let manifestContent = '';
+      try {
+        const pom = await readFile(join(projectPath, 'pom.xml'), 'utf8');
+        manifestContent += pom;
+      } catch { /* no pom.xml */ }
+      try {
+        const gradle = await readFile(join(projectPath, 'build.gradle'), 'utf8');
+        manifestContent += gradle;
+      } catch { /* no build.gradle */ }
+
+      // Collect all Java source file contents recursively
+      async function collectJavaSources(dir) {
+        let contents = [];
+        try {
+          const items = await readdir(dir, { withFileTypes: true });
+          for (const item of items) {
+            const full = join(dir, item.name);
+            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'target' && item.name !== 'build') {
+              contents = contents.concat(await collectJavaSources(full));
+            } else if (item.isFile() && item.name.endsWith('.java')) {
+              try { contents.push(await readFile(full, 'utf8')); } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+        return contents;
+      }
+      const javaSources = await collectJavaSources(projectPath);
+      const combinedJavaSource = javaSources.join('\n');
+
+      for (const entry of entries) {
+        // Check manifest (pom.xml <artifactId>X</artifactId> or build.gradle implementation 'group:artifact')
+        const artifactName = entry.from.split('.').pop().split(' ')[0];
+        const pomPattern = new RegExp(`<artifactId>\\s*${artifactName}\\s*</artifactId>`, 'i');
+        const gradlePattern = new RegExp(`implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`, 'i');
+        const sourcePattern = new RegExp(entry.detectPattern);
+
+        if (pomPattern.test(manifestContent) || gradlePattern.test(manifestContent) || sourcePattern.test(combinedJavaSource)) {
+          findings.push({
+            check: 'outdated-pattern',
+            severity: entry.severity,
+            category: 'outdated',
+            locations: [{ file: 'project', startLine: 1 }],
+            description: `Outdated usage '${entry.from}': ${entry.description}`,
+            from: entry.from,
+            to: entry.to,
+            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+            fixable: false,
+            confidence: 0.75,
+          });
+        }
       }
     }
   }
@@ -505,6 +623,8 @@ server.registerTool(
           maxFileLines: config.thresholds.maxFileLines,
           maxComplexity: config.thresholds.maxComplexity,
           maxNesting: config.thresholds.maxNesting,
+          maxExportsPerFile: config.thresholds.maxExportsPerFile,
+          maxImportsPerFile: config.thresholds.maxImportsPerFile,
           languages,
         });
         allFindings.push(...metricFindings.map((f) => ({
@@ -566,8 +686,13 @@ server.registerTool(
         allFindings.push(...outdatedFindings);
       }
 
+      // Filter out disabled checks
+      const filtered = config.disabledChecks && config.disabledChecks.length > 0
+        ? allFindings.filter((f) => !config.disabledChecks.includes(f.check))
+        : allFindings;
+
       // Score findings
-      const scored = scoreFindings(allFindings);
+      const scored = scoreFindings(filtered);
 
       // Persist
       const scanId = `scan-${Date.now()}`;
