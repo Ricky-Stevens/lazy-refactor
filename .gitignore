@@ -2,3 +2,4 @@ node_modules/
 .lazy-dev/
 .lazy-refactor/
 .serena/
+.idea/
