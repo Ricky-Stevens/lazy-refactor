@@ -1,0 +1,22 @@
+{
+  "organizeImports": {
+    "enabled": true
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "files": {
+    "include": [
+      "src/**/*.js",
+      "test/**/*.js"
+    ]
+  }
+}
