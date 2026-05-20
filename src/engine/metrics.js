@@ -107,6 +107,7 @@ export function computeFileMetrics(content, filePath) {
       /\bswitch\b/g,
       /\bfor\b/g,
       /\bwhile\b/g,
+      /\bdo\b/g,
       /\?/g,           // ternary
       /&&/g,
       /\|\|/g,
@@ -219,6 +220,8 @@ async function findSourceFiles(dirPath, allowedExtensions) {
  *   maxFileLines?: number,
  *   maxComplexity?: number,
  *   maxNesting?: number,
+ *   maxExportsPerFile?: number,
+ *   maxImportsPerFile?: number,
  *   languages?: string[]
  * }} [options]
  * @returns {Promise<{
@@ -248,8 +251,10 @@ async function findSourceFiles(dirPath, allowedExtensions) {
 export async function computeMetrics(path, options = {}) {
   const {
     maxFileLines = 300,
-    maxComplexity = 50,
-    maxNesting = 5,
+    maxComplexity = 15,
+    maxNesting = 4,
+    maxExportsPerFile = 10,
+    maxImportsPerFile = 15,
     languages = [],
   } = options;
 
@@ -323,6 +328,66 @@ export async function computeMetrics(path, options = {}) {
         category: 'metrics',
         description: `File max nesting depth ${metrics.maxNestingDepth} exceeds threshold ${maxNesting}`,
         suggestion: 'Extract nested logic into named functions or guard clauses.',
+        fixable: false,
+      });
+    }
+
+    if (metrics.exportCount > maxExportsPerFile) {
+      findings.push({
+        ruleId: 'metrics-high-exports',
+        file: relativePath,
+        line: 1,
+        match: `${metrics.exportCount} exports`,
+        severity: 'medium',
+        check: 'modularity',
+        confidence: 0.85,
+        description: `File has ${metrics.exportCount} exports, exceeding threshold of ${maxExportsPerFile}`,
+        suggestion: 'Split exports into smaller, more focused modules.',
+        fixable: false,
+      });
+    }
+
+    if (metrics.importCount > maxImportsPerFile) {
+      findings.push({
+        ruleId: 'metrics-high-imports',
+        file: relativePath,
+        line: 1,
+        match: `${metrics.importCount} imports`,
+        severity: 'medium',
+        check: 'modularity',
+        confidence: 0.85,
+        description: `File has ${metrics.importCount} imports, exceeding threshold of ${maxImportsPerFile}`,
+        suggestion: 'Consider reducing dependencies or splitting the file.',
+        fixable: false,
+      });
+    }
+
+    if (metrics.commentToCodeRatio < 0.02 && metrics.complexityScore > 15) {
+      findings.push({
+        ruleId: 'metrics-low-comments',
+        file: relativePath,
+        line: 1,
+        match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
+        severity: 'low',
+        check: 'comment-quality',
+        confidence: 0.7,
+        description: `Complex file (complexity ${metrics.complexityScore.toFixed(2)}) has very low comment ratio (${metrics.commentToCodeRatio})`,
+        suggestion: 'Add explanatory comments to complex logic.',
+        fixable: false,
+      });
+    }
+
+    if (metrics.commentToCodeRatio > 0.5) {
+      findings.push({
+        ruleId: 'metrics-excessive-comments',
+        file: relativePath,
+        line: 1,
+        match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
+        severity: 'low',
+        check: 'comment-quality',
+        confidence: 0.7,
+        description: `File has excessive comment ratio (${metrics.commentToCodeRatio}) — more comments than code`,
+        suggestion: 'Review and prune redundant or narration-style comments.',
         fixable: false,
       });
     }

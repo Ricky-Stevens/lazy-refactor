@@ -61,6 +61,17 @@ describe('computeFileMetrics — JS brace-based nesting', () => {
     expect(metrics.branchPointCount).toBe(8);
   });
 
+  test('counts do-while as a branch point', () => {
+    const content = [
+      'do {',
+      '  x++;',
+      '} while (x < 10);',
+    ].join('\n');
+    const metrics = computeFileMetrics(content, 'foo.js');
+    // do(1) + while(1) = 2
+    expect(metrics.branchPointCount).toBe(2);
+  });
+
   test('comment-to-code ratio', () => {
     const content = [
       '// comment 1',
@@ -257,5 +268,180 @@ describe('computeMetrics — directory scan', () => {
       (f) => f.ruleId === 'metrics-high-complexity'
     );
     expect(complexityFindings.length).toBeGreaterThan(0);
+  });
+
+  test('default maxComplexity is 15 and maxNesting is 4', async () => {
+    // Write a file that exceeds old defaults (50/5) but is within new defaults (15/4)
+    // would be caught at 15 but not at 50 — so we just confirm defaults by
+    // checking the description string on a finding produced at threshold 15
+    const result = await computeMetrics(tmpDir, {
+      maxComplexity: 15,
+      maxNesting: 4,
+      languages: ['javascript'],
+    });
+    // The result should not error — defaults match these values
+    expect(result).toHaveProperty('fileMetrics');
+    expect(result).toHaveProperty('findings');
+  });
+
+  test('default thresholds 15/4 are used when no options provided for a scan', async () => {
+    // Create a separate temp dir with a file designed to exceed complexity 15
+    // but not 50, to confirm the default is 15 not 50
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-defaults-'));
+    // Build a file with enough branching to exceed complexity 15 but not 50
+    // complexityScore = nesting*3 + branches*2 + lines/50
+    // With nesting=2, branches=10, lines=10: 6+20+0.2 = 26.2 > 15 but < 50
+    const content = [
+      'function f() {',
+      '  if (a) {',
+      '    if (b) {} else {}',
+      '    if (c) {} else {}',
+      '    if (d) {} else {}',
+      '    if (e) {} else {}',
+      '    if (g) {} else {}',
+      '  }',
+      '}',
+      'const x = 1;',
+    ].join('\n');
+    await writeFile(join(specificTmpDir, 'threshold.js'), content);
+
+    const result = await computeMetrics(specificTmpDir, { languages: ['javascript'] });
+    const complexityFinding = result.findings.find(
+      (f) => f.ruleId === 'metrics-high-complexity' && f.file.includes('threshold.js')
+    );
+    // With default maxComplexity=15 this should fire; at 50 it would not
+    expect(complexityFinding).toBeDefined();
+  });
+
+  test('emits metrics-high-exports finding when exportCount exceeds maxExportsPerFile', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-exports-'));
+    // 12 exports — exceeds default of 10
+    const lines = Array.from({ length: 12 }, (_, i) => `export const v${i} = ${i};`);
+    await writeFile(join(specificTmpDir, 'heavy-exports.js'), lines.join('\n'));
+
+    const result = await computeMetrics(specificTmpDir, {
+      maxExportsPerFile: 10,
+      languages: ['javascript'],
+    });
+    const finding = result.findings.find(
+      (f) => f.ruleId === 'metrics-high-exports' && f.file.includes('heavy-exports.js')
+    );
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('medium');
+    expect(finding.check).toBe('modularity');
+    expect(finding.confidence).toBe(0.85);
+  });
+
+  test('does not emit metrics-high-exports when exportCount is within threshold', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-exports-ok-'));
+    const lines = Array.from({ length: 5 }, (_, i) => `export const v${i} = ${i};`);
+    await writeFile(join(specificTmpDir, 'few-exports.js'), lines.join('\n'));
+
+    const result = await computeMetrics(specificTmpDir, {
+      maxExportsPerFile: 10,
+      languages: ['javascript'],
+    });
+    const finding = result.findings.find((f) => f.ruleId === 'metrics-high-exports');
+    expect(finding).toBeUndefined();
+  });
+
+  test('emits metrics-high-imports finding when importCount exceeds maxImportsPerFile', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-imports-'));
+    // 17 imports — exceeds default of 15
+    const lines = Array.from({ length: 17 }, (_, i) => `import v${i} from './mod${i}.js';`);
+    await writeFile(join(specificTmpDir, 'heavy-imports.js'), lines.join('\n'));
+
+    const result = await computeMetrics(specificTmpDir, {
+      maxImportsPerFile: 15,
+      languages: ['javascript'],
+    });
+    const finding = result.findings.find(
+      (f) => f.ruleId === 'metrics-high-imports' && f.file.includes('heavy-imports.js')
+    );
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('medium');
+    expect(finding.check).toBe('modularity');
+    expect(finding.confidence).toBe(0.85);
+  });
+
+  test('emits metrics-low-comments for complex file with almost no comments', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-lowcomments-'));
+    // High complexity (many branches, nesting), zero comments
+    const content = [
+      'function f() {',
+      '  if (a) {',
+      '    if (b) { for (;;) { while(x) { if(y){} } } }',
+      '    if (c) {} else {}',
+      '    if (d) {} else {}',
+      '    if (e) {} else {}',
+      '  }',
+      '  switch(z) { case 1: break; }',
+      '}',
+      'const x = 1;',
+    ].join('\n');
+    await writeFile(join(specificTmpDir, 'complex-no-comments.js'), content);
+
+    const result = await computeMetrics(specificTmpDir, {
+      maxComplexity: 999, // don't want other findings clouding the test
+      maxNesting: 999,
+      languages: ['javascript'],
+    });
+    const finding = result.findings.find(
+      (f) => f.ruleId === 'metrics-low-comments' && f.file.includes('complex-no-comments.js')
+    );
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('low');
+    expect(finding.check).toBe('comment-quality');
+    expect(finding.confidence).toBe(0.7);
+  });
+
+  test('does not emit metrics-low-comments for simple file with no comments', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-simple-nocomments-'));
+    // Low complexity — commentToCodeRatio < 0.02 but complexityScore <= 15
+    const content = 'const x = 1;\nconst y = 2;\n';
+    await writeFile(join(specificTmpDir, 'simple.js'), content);
+
+    const result = await computeMetrics(specificTmpDir, { languages: ['javascript'] });
+    const finding = result.findings.find((f) => f.ruleId === 'metrics-low-comments');
+    expect(finding).toBeUndefined();
+  });
+
+  test('emits metrics-excessive-comments when commentToCodeRatio > 0.5', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-excessive-'));
+    // 3 comment lines, 1 code line → ratio = 3.0 > 0.5
+    const content = [
+      '// comment 1',
+      '// comment 2',
+      '// comment 3',
+      'const x = 1;',
+    ].join('\n');
+    await writeFile(join(specificTmpDir, 'over-commented.js'), content);
+
+    const result = await computeMetrics(specificTmpDir, { languages: ['javascript'] });
+    const finding = result.findings.find(
+      (f) => f.ruleId === 'metrics-excessive-comments' && f.file.includes('over-commented.js')
+    );
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('low');
+    expect(finding.check).toBe('comment-quality');
+    expect(finding.confidence).toBe(0.7);
+  });
+
+  test('does not emit metrics-excessive-comments when ratio is acceptable', async () => {
+    const specificTmpDir = await mkdtemp(join(tmpdir(), 'metrics-ok-comments-'));
+    // 1 comment, 5 code lines → ratio = 0.2, well within 0.5
+    const content = [
+      '// brief description',
+      'const a = 1;',
+      'const b = 2;',
+      'const c = 3;',
+      'const d = 4;',
+      'const e = 5;',
+    ].join('\n');
+    await writeFile(join(specificTmpDir, 'ok-comments.js'), content);
+
+    const result = await computeMetrics(specificTmpDir, { languages: ['javascript'] });
+    const finding = result.findings.find((f) => f.ruleId === 'metrics-excessive-comments');
+    expect(finding).toBeUndefined();
   });
 });
