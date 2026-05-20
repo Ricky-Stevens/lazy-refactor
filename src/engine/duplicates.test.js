@@ -177,6 +177,20 @@ describe('rollingHash', () => {
     expect(result[0]).toEqual({ hash: expect.any(Number), startIndex: 0, endIndex: 2 });
     expect(result[1]).toEqual({ hash: expect.any(Number), startIndex: 1, endIndex: 3 });
   });
+
+  it('sliding hash matches a hash computed from scratch for the same window', () => {
+    // Build a token sequence long enough to slide several positions
+    const tokens = ['if', 'IDENT', '===', 'NUM', '{', 'return', 'STR', '}', 'else', 'IDENT'];
+    const windowSize = 4;
+    const slid = rollingHash(tokens, windowSize);
+
+    // For every window position, compute the hash from scratch and compare
+    for (let start = 0; start < slid.length; start++) {
+      const window = tokens.slice(start, start + windowSize);
+      const [scratch] = rollingHash(window, windowSize);
+      expect(slid[start].hash).toBe(scratch.hash);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -367,5 +381,72 @@ class EventEmitter {
 
     const findings = await scanDuplicates(subDir, { minTokens: 5 });
     expect(findings).toHaveLength(0);
+  });
+
+  it('reports accurate line numbers for blocks with repeated short tokens', async () => {
+    const subDir = join(dir, 'dup-lines');
+    await mkdir(subDir, { recursive: true });
+
+    // Shared block uses a structurally unique mix of keywords so its normalised form
+    // cannot match the preamble lines (which are all `const IDENT = { IDENT : NUM } ;`).
+    // This lets us isolate findings that come from the shared block itself.
+    const sharedBlock = [
+      'if (a > 0) {',
+      '  while (b < 10) {',
+      '    for (let i = 0; i < b; i++) {',
+      '      try {',
+      '        return a + b + i;',
+      '      } catch (e) {',
+      '        throw e;',
+      '      }',
+      '    }',
+      '  }',
+      '}',
+    ].join('\n');
+
+    // File A: 5 preamble lines then the block (block starts at line 5, 0-based)
+    const preambleA = [
+      'const pa1 = { x: 1 };',
+      'const pa2 = { y: 2 };',
+      'const pa3 = { z: 3 };',
+      'const pa4 = { w: 4 };',
+      'const pa5 = { v: 5 };',
+    ].join('\n');
+
+    // File B: 2 preamble lines then the block (block starts at line 2, 0-based)
+    const preambleB = [
+      'const pb1 = { a: 10 };',
+      'const pb2 = { b: 20 };',
+    ].join('\n');
+
+    const contentA = preambleA + '\n' + sharedBlock;
+    const contentB = preambleB + '\n' + sharedBlock;
+
+    await writeFile(join(subDir, 'la.js'), contentA);
+    await writeFile(join(subDir, 'lb.js'), contentB);
+
+    // minTokens=20: the shared block has ~52 normalised tokens so it definitely fires.
+    // Use a lower similarity threshold since normalisation makes it 1.0 anyway.
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.9 });
+    expect(findings.length).toBeGreaterThan(0);
+
+    // All findings should have end >= start in both files
+    for (const f of findings) {
+      expect(f.endLineA).toBeGreaterThanOrEqual(f.startLineA);
+      expect(f.endLineB).toBeGreaterThanOrEqual(f.startLineB);
+    }
+
+    // Findings whose windows land inside the shared block must show the preamble offset.
+    // File A preamble = 5 lines → block at line 5+; File B preamble = 2 lines → block at line 2+.
+    // So any finding from within the shared block satisfies startLineA >= 5 and startLineB >= 2,
+    // and critically startLineA > startLineB (offset difference = 3 lines).
+    const blockFindings = findings.filter((f) => f.startLineA >= 5 && f.startLineB >= 2);
+    expect(blockFindings.length).toBeGreaterThan(0);
+
+    for (const f of blockFindings) {
+      // The preamble offset difference between the two files is 3 lines (5 vs 2).
+      // fileA/fileB assignment order is not guaranteed, so check the absolute difference.
+      expect(Math.abs(f.startLineA - f.startLineB)).toBe(3);
+    }
   });
 });

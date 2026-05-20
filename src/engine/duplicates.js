@@ -5,6 +5,10 @@ import { join, extname } from 'node:path';
 const RK_BASE = 31;
 const RK_MOD = 1_000_000_007;
 
+// BigInt versions for overflow-safe modular arithmetic in rollingHash
+const BIG_BASE = BigInt(RK_BASE);
+const BIG_MOD = BigInt(RK_MOD);
+
 // Language -> file extensions (same mapping as cross-ref)
 const LANGUAGE_EXTENSIONS = {
   typescript: ['.ts', '.tsx', '.js', '.jsx'],
@@ -37,13 +41,12 @@ const NUMBER_RE = /^-?(?:0x[\da-fA-F]+|0b[01]+|0o[0-7]+|\d+(?:\.\d+)?(?:[eE][+-]
 const STRING_SENTINEL = '"..."';
 
 /**
- * Tokenize source content into an array of token strings.
- * Splits on whitespace and operators/delimiters: (){}[];,.<>+-*\/=!&|?:
- * String literals (single/double/backtick-quoted) are emitted as a single '"..."' token.
+ * Tokenize source content, returning tokens with their start character positions.
+ * Internal implementation used by both tokenize() and scanDuplicates().
  * @param {string} content
- * @returns {string[]}
+ * @returns {Array<{token: string, pos: number}>}
  */
-export function tokenize(content) {
+function tokenizeWithPositions(content) {
   const tokens = [];
   let i = 0;
   const len = content.length;
@@ -76,6 +79,7 @@ export function tokenize(content) {
 
     // String literals: single, double, backtick
     if (ch === '"' || ch === "'" || ch === '`') {
+      const start = i;
       const quote = ch;
       i++;
       while (i < len) {
@@ -83,32 +87,34 @@ export function tokenize(content) {
         if (content[i] === quote) { i++; break; }
         i++;
       }
-      tokens.push(STRING_SENTINEL);
+      tokens.push({ token: STRING_SENTINEL, pos: start });
       continue;
     }
 
     // Identifiers / keywords
     if (/[A-Za-z_$]/.test(ch)) {
+      const start = i;
       let j = i;
       while (j < len && /[\w$]/.test(content[j])) j++;
-      tokens.push(content.slice(i, j));
+      tokens.push({ token: content.slice(i, j), pos: start });
       i = j;
       continue;
     }
 
     // Numeric literals
     if (/\d/.test(ch) || (ch === '-' && /\d/.test(content[i + 1] ?? ''))) {
+      const start = i;
       let j = i;
       if (ch === '-') j++;
       while (j < len && /[\dA-Fa-fxXbBoO.]/.test(content[j])) j++;
-      tokens.push(content.slice(i, j));
+      tokens.push({ token: content.slice(i, j), pos: start });
       i = j;
       continue;
     }
 
     // Operators and delimiters — emit each character as its own token
     if (/[(){}[\];,.<>+\-*/=!&|?:]/.test(ch)) {
-      tokens.push(ch);
+      tokens.push({ token: ch, pos: i });
       i++;
       continue;
     }
@@ -118,6 +124,17 @@ export function tokenize(content) {
   }
 
   return tokens;
+}
+
+/**
+ * Tokenize source content into an array of token strings.
+ * Splits on whitespace and operators/delimiters: (){}[];,.<>+-*\/=!&|?:
+ * String literals (single/double/backtick-quoted) are emitted as a single '"..."' token.
+ * @param {string} content
+ * @returns {string[]}
+ */
+export function tokenize(content) {
+  return tokenizeWithPositions(content).map((t) => t.token);
 }
 
 /**
@@ -148,34 +165,35 @@ export function rollingHash(tokens, windowSize) {
 
   const result = [];
 
-  // Pre-compute per-token numeric values using a simple string hash
+  // Pre-compute per-token numeric values using a simple string hash.
+  // Returns a BigInt to avoid overflow in subsequent arithmetic.
   function tokenValue(tok) {
-    let h = 0;
+    let h = 0n;
     for (let k = 0; k < tok.length; k++) {
-      h = (h * RK_BASE + tok.charCodeAt(k)) % RK_MOD;
+      h = (h * BIG_BASE + BigInt(tok.charCodeAt(k))) % BIG_MOD;
     }
-    return h + 1; // avoid zero
+    return h + 1n; // avoid zero
   }
 
-  // base^windowSize mod MOD
-  let basePow = 1;
+  // base^(windowSize-1) mod MOD — coefficient of the leading term in the polynomial
+  let basePow = 1n;
+  for (let k = 0; k < windowSize - 1; k++) {
+    basePow = (basePow * BIG_BASE) % BIG_MOD;
+  }
+
+  // Initial window hash: hash = v[0]*base^(w-1) + v[1]*base^(w-2) + ... + v[w-1]
+  let hash = 0n;
   for (let k = 0; k < windowSize; k++) {
-    basePow = (basePow * RK_BASE) % RK_MOD;
+    hash = (hash * BIG_BASE + tokenValue(tokens[k])) % BIG_MOD;
   }
+  result.push({ hash: Number(hash), startIndex: 0, endIndex: windowSize - 1 });
 
-  // Initial window hash
-  let hash = 0;
-  for (let k = 0; k < windowSize; k++) {
-    hash = (hash * RK_BASE + tokenValue(tokens[k])) % RK_MOD;
-  }
-  result.push({ hash, startIndex: 0, endIndex: windowSize - 1 });
-
-  // Slide window
+  // Slide window: new_hash = (old_hash - leaving * base^(w-1)) * base + entering
   for (let i = 1; i + windowSize - 1 < tokens.length; i++) {
-    const removing = tokenValue(tokens[i - 1]);
-    const adding = tokenValue(tokens[i + windowSize - 1]);
-    hash = (hash * RK_BASE - removing * basePow + adding + RK_MOD * 2) % RK_MOD;
-    result.push({ hash, startIndex: i, endIndex: i + windowSize - 1 });
+    const leaving = tokenValue(tokens[i - 1]);
+    const entering = tokenValue(tokens[i + windowSize - 1]);
+    hash = ((hash - leaving * basePow % BIG_MOD + BIG_MOD) * BIG_BASE + entering) % BIG_MOD;
+    result.push({ hash: Number(hash), startIndex: i, endIndex: i + windowSize - 1 });
   }
 
   return result;
@@ -297,28 +315,16 @@ async function collectFiles(dir, options = {}) {
 }
 
 /**
- * Map token index to approximate line number in source content.
+ * Map token index to line number in source content using exact character positions.
  * @param {string} content
- * @param {string[]} tokens - raw (non-normalised) tokens
+ * @param {Array<{token: string, pos: number}>} tokenPositions - tokens with start char positions
  * @param {number} tokenIndex
  * @returns {number} 0-based line number
  */
-function tokenIndexToLine(content, tokens, tokenIndex) {
-  // Rejoin the tokens up to the target index and count newlines
-  // This is approximate — we find the nth occurrence of the token text in content
-  let charPos = 0;
-  let found = 0;
-  for (let i = 0; i <= tokenIndex && i < tokens.length; i++) {
-    const tok = tokens[i];
-    const idx = content.indexOf(tok, charPos);
-    if (idx === -1) break;
-    charPos = idx + tok.length;
-    if (i === tokenIndex) {
-      return content.slice(0, idx).split('\n').length - 1;
-    }
-    found = i;
-  }
-  return 0;
+function tokenIndexToLine(content, tokenPositions, tokenIndex) {
+  if (tokenIndex >= tokenPositions.length) return 0;
+  const charPos = tokenPositions[tokenIndex].pos;
+  return content.slice(0, charPos).split('\n').length - 1;
 }
 
 /**
@@ -345,10 +351,11 @@ export async function scanDuplicates(path, options = {}) {
     } catch {
       continue;
     }
-    const raw = tokenize(content);
+    const tokenPositions = tokenizeWithPositions(content);
+    const raw = tokenPositions.map((t) => t.token);
     const normalised = normalizeTokens(raw);
     if (normalised.length < minTokens) continue;
-    fileTokenData.push({ file, content, raw, normalised });
+    fileTokenData.push({ file, content, tokenPositions, raw, normalised });
   }
 
   if (fileTokenData.length < 2) return [];
@@ -378,10 +385,10 @@ export async function scanDuplicates(path, options = {}) {
     if (emitted.has(key)) continue;
     emitted.add(key);
 
-    const startLineA = tokenIndexToLine(dataA.content, dataA.raw, startA);
-    const endLineA = tokenIndexToLine(dataA.content, dataA.raw, endA);
-    const startLineB = tokenIndexToLine(dataB.content, dataB.raw, startB);
-    const endLineB = tokenIndexToLine(dataB.content, dataB.raw, endB);
+    const startLineA = tokenIndexToLine(dataA.content, dataA.tokenPositions, startA);
+    const endLineA = tokenIndexToLine(dataA.content, dataA.tokenPositions, endA);
+    const startLineB = tokenIndexToLine(dataB.content, dataB.tokenPositions, startB);
+    const endLineB = tokenIndexToLine(dataB.content, dataB.tokenPositions, endB);
 
     findings.push({
       check: 'duplicate',
