@@ -187,6 +187,40 @@ const rules = [
     suggestion: 'Resolve the underlying type error instead of suppressing it. If suppression is unavoidable, add an explanatory comment on the same line.',
     fixable: false,
   },
+  {
+    id: 'full-moment-import-ts',
+    severity: 'medium',
+    category: 'full-library-import',
+    description: 'Full moment.js library imported — moment is large and largely superseded by date-fns or Temporal',
+    language: 'typescript',
+    pattern: 'import\\s+\\w+\\s+from\\s+[\'"]moment[\'"]',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx}',
+    exclude: [
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/node_modules/**',
+    ],
+    suggestion: "Consider replacing moment.js with date-fns (tree-shakeable) or the native Temporal API. If moment is required, import only what you need.",
+    fixable: true,
+  },
+  {
+    id: 'full-underscore-import-ts',
+    severity: 'medium',
+    category: 'full-library-import',
+    description: 'Full underscore.js library imported — causes large bundle size; prefer lodash-es or native equivalents',
+    language: 'typescript',
+    pattern: 'import\\s+_\\s+from\\s+[\'"]underscore[\'"]',
+    antiPattern: null,
+    filePattern: '**/*.{ts,tsx,js,jsx}',
+    exclude: [
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/node_modules/**',
+    ],
+    suggestion: "Replace underscore with native Array/Object methods or lodash-es for tree-shaking. If underscore is required, import individual functions.",
+    fixable: true,
+  },
 ];
 
 export default rules;

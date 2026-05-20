@@ -20,7 +20,7 @@ const rules = [
     description: 'Error return value discarded with _ — prevents error propagation and hides failures',
     language: 'go',
     pattern: '_\\s*(?::=|=)\\s*\\w[\\w.]*\\s*\\(',
-    antiPattern: null,
+    antiPattern: 'defer\\s+\\w+\\.Close|_\\s*=\\s*\\w+\\.Close\\(|_\\s*=\\s*\\w+\\.Flush\\(',
     filePattern: '**/*.go',
     exclude: [
       '**/*_test.go',
@@ -93,6 +93,38 @@ const rules = [
     ],
     suggestion: 'Migrate to direct replacements: ioutil.ReadFile→os.ReadFile, ioutil.WriteFile→os.WriteFile, ioutil.ReadAll→io.ReadAll, ioutil.TempDir→os.MkdirTemp, ioutil.TempFile→os.CreateTemp.',
     fixable: true,
+  },
+  {
+    id: 'bare-return-err-go',
+    severity: 'low',
+    category: 'error-handling',
+    description: '`if err != nil { return err }` — error returned without wrapping loses call-site context',
+    language: 'go',
+    pattern: 'if\\s+err\\s*!=\\s*nil\\s*\\{\\s*return\\s+err\\s*\\}',
+    antiPattern: null,
+    filePattern: '**/*.go',
+    exclude: [
+      '**/*_test.go',
+      '**/vendor/**',
+    ],
+    suggestion: 'Wrap error with fmt.Errorf or errors.Wrap for context',
+    fixable: false,
+  },
+  {
+    id: 'open-without-defer-close-go',
+    severity: 'high',
+    category: 'resource-management',
+    description: 'File or resource opened without a deferred Close — resource may leak on early return or panic',
+    language: 'go',
+    pattern: '(?:\\.Open\\(|os\\.Create\\()',
+    antiPattern: 'defer\\s+\\w+\\.Close',
+    filePattern: '**/*.go',
+    exclude: [
+      '**/*_test.go',
+      '**/vendor/**',
+    ],
+    suggestion: 'Always defer Close immediately after a successful open: `f, err := os.Open(...); if err != nil { ... }; defer f.Close()`.',
+    fixable: false,
   },
 ];
 

@@ -20,7 +20,7 @@ const rules = [
     description: 'Empty catch block or catch block that only logs — exception is silently swallowed',
     language: 'csharp',
     pattern: 'catch\\s*(?:\\([^)]*\\))?\\s*\\{\\s*(?:Console\\.(?:Write(?:Line)?|Error\\.Write(?:Line)?)\\s*\\([^)]*\\)\\s*;\\s*)?\\}',
-    antiPattern: null,
+    antiPattern: 'when\\s*\\(',
     filePattern: '**/*.cs',
     exclude: [
       '**/*.Tests.*',
