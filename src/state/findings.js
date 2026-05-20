@@ -6,7 +6,7 @@
  *   scanId: string | null,
  *   path: string | null,
  *   findings: Finding[],
- *   summary: { totalFindings, bySeverity, byCategory }
+ *   summary: { totalFindings, bySeverity, byCategory, byStatus }
  * }
  *
  * Finding statuses: 'open' | 'fixed' | 'ignored' | 'in-progress' | 'false-positive'
@@ -27,6 +27,7 @@ const DEFAULT_STATE = () => ({
     totalFindings: 0,
     bySeverity: {},
     byCategory: {},
+    byStatus: {},
   },
 });
 

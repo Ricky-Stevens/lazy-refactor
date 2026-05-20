@@ -88,6 +88,9 @@ describe("loadFindings", () => {
     expect(state.path).toBeNull();
     expect(state.findings).toEqual([]);
     expect(state.summary.totalFindings).toBe(0);
+    expect(state.summary.bySeverity).toEqual({});
+    expect(state.summary.byCategory).toEqual({});
+    expect(state.summary.byStatus).toEqual({});
   });
 });
 

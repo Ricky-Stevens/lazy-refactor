@@ -29,26 +29,33 @@ Apply fixes to code quality issues identified in scans, with test verification a
    - If a severity level, fetch all findings at that level
    - If `all`, fetch all open findings
 
-2. **Dispatch the fixer agent** for each finding:
+2. **Confirm with the user** before making any changes:
+   - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)
+   - Print the total count, e.g. `3 finding(s) will be fixed.`
+   - Ask the user to confirm: `Proceed? [y/N]`
+   - If the `--yes` flag was passed, skip the prompt and proceed automatically
+   - If the user does not confirm, abort with no changes made
+
+3. **Dispatch the fixer agent** for each finding:
    - The fixer will read the finding details
    - Understand the codebase context
    - Make the minimal targeted change
    - Run tests to verify the fix
 
-3. **Dry-run mode** (when `--dry-run` is provided):
+4. **Dry-run mode** (when `--dry-run` is provided):
    - Analyze what would be fixed
    - Show a summary of changes that would be made
    - List affected files
    - Do not make actual changes
    - Do not run tests
 
-4. **Handle results**:
+5. **Handle results**:
    - Track which findings were successfully fixed
    - Track which fixes failed and report why
    - Update finding statuses based on results
    - Provide a summary report
 
-5. **Report output**:
+6. **Report output**:
    - List each finding fixed or failed
    - Show test results for fixed findings
    - Indicate any rollbacks due to test failure
