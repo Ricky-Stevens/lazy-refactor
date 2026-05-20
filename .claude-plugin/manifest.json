@@ -1,0 +1,11 @@
+{
+  "name": "lazy-refactor",
+  "description": "Code quality and maintainability scanner with automated fixes",
+  "mcpServers": {
+    "lazy-refactor": {
+      "command": "bun",
+      "args": ["run", "src/mcp/server.js"],
+      "env": {}
+    }
+  }
+}
