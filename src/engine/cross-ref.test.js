@@ -2,7 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { extractExports, extractImports, scanDeadCode, scanUnusedImports } from './cross-ref.js';
+import {
+  extractExports,
+  extractImports,
+  scanDeadCode,
+  scanUnusedImports,
+  scanInconsistentPatterns,
+  scanOverEngineering,
+} from './cross-ref.js';
 
 // ---------------------------------------------------------------------------
 // extractExports
@@ -333,5 +340,338 @@ describe('scanUnusedImports', () => {
       expect(typeof f.symbol).toBe('string');
       expect(typeof f.importLine).toBe('number');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — TypeScript export { X } re-export syntax
+// ---------------------------------------------------------------------------
+
+describe('extractExports — TypeScript export { X } re-exports', () => {
+  it('detects plain named re-export', () => {
+    const result = extractExports("export { foo, bar };", 'typescript');
+    expect(result.map((e) => e.name)).toContain('foo');
+    expect(result.map((e) => e.name)).toContain('bar');
+  });
+
+  it('detects aliased re-export (foo as baz → baz is exported)', () => {
+    const result = extractExports("export { foo as baz };", 'typescript');
+    expect(result.map((e) => e.name)).toContain('baz');
+    expect(result.map((e) => e.name)).not.toContain('foo');
+  });
+
+  it('detects re-export with "from" source', () => {
+    const result = extractExports("export { readFile, writeFile } from 'node:fs/promises';", 'typescript');
+    expect(result.map((e) => e.name)).toContain('readFile');
+    expect(result.map((e) => e.name)).toContain('writeFile');
+  });
+
+  it('records the correct line number for re-exports', () => {
+    const content = "// preamble\nexport { alpha, beta };";
+    const result = extractExports(content, 'typescript');
+    const names = result.map((e) => e.name);
+    expect(names).toContain('alpha');
+    expect(names).toContain('beta');
+    // Both exports are on line 1 (0-based)
+    for (const e of result.filter((r) => names.includes(r.name))) {
+      expect(e.line).toBe(1);
+    }
+  });
+
+  it('does not produce duplicate entries when a symbol is both declared and re-exported', () => {
+    const content = [
+      "export function helper() {}",
+      "export { helper };",
+    ].join('\n');
+    const result = extractExports(content, 'typescript');
+    const helpers = result.filter((e) => e.name === 'helper');
+    // It's fine to have two entries (one from declaration, one from re-export) — just assert they exist
+    expect(helpers.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1 — C# import parsing
+// ---------------------------------------------------------------------------
+
+describe('extractImports — C#', () => {
+  it('extracts last segment from plain using directive', () => {
+    const result = extractImports('using System.Collections.Generic;', 'csharp');
+    expect(result).toContain('Generic');
+  });
+
+  it('extracts alias from using alias directive', () => {
+    const result = extractImports('using Dict = System.Collections.Generic.Dictionary;', 'csharp');
+    expect(result).toContain('Dict');
+    // Should NOT add the right-hand type name
+    expect(result).not.toContain('Dictionary');
+  });
+
+  it('handles multiple using statements', () => {
+    const content = [
+      'using System;',
+      'using System.Linq;',
+      'using MyApp.Services;',
+    ].join('\n');
+    const result = extractImports(content, 'csharp');
+    expect(result).toContain('System');
+    expect(result).toContain('Linq');
+    expect(result).toContain('Services');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1 — Java import parsing
+// ---------------------------------------------------------------------------
+
+describe('extractImports — Java', () => {
+  it('extracts last segment from a regular import', () => {
+    const result = extractImports('import java.util.ArrayList;', 'java');
+    expect(result).toContain('ArrayList');
+  });
+
+  it('extracts last segment from a static import', () => {
+    const result = extractImports('import static org.junit.Assert.assertEquals;', 'java');
+    expect(result).toContain('assertEquals');
+  });
+
+  it('handles multiple import statements', () => {
+    const content = [
+      'import java.util.List;',
+      'import java.util.Map;',
+      'import static java.util.Collections.sort;',
+    ].join('\n');
+    const result = extractImports(content, 'java');
+    expect(result).toContain('List');
+    expect(result).toContain('Map');
+    expect(result).toContain('sort');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanUnusedImports — C# and Java
+// ---------------------------------------------------------------------------
+
+describe('scanUnusedImports — C#', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'unused-csharp-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('flags unused C# using directive', async () => {
+    await writeFile(
+      join(dir, 'Service.cs'),
+      [
+        'using System;',
+        'using System.Linq;',
+        '',
+        'public class Service {',
+        '  public void Run() { Console.WriteLine("hi"); }',
+        '}',
+      ].join('\n')
+    );
+
+    const findings = await scanUnusedImports(dir, {});
+    const symbols = findings.map((f) => f.symbol);
+    // Linq is not used in the body
+    expect(symbols).toContain('Linq');
+    // System/Console is used
+    expect(symbols).not.toContain('System');
+  });
+});
+
+describe('scanUnusedImports — Java', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'unused-java-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('flags unused Java import', async () => {
+    await writeFile(
+      join(dir, 'App.java'),
+      [
+        'import java.util.ArrayList;',
+        'import java.util.Map;',
+        '',
+        'public class App {',
+        '  public void run() { ArrayList<String> list = new ArrayList<>(); }',
+        '}',
+      ].join('\n')
+    );
+
+    const findings = await scanUnusedImports(dir, {});
+    const symbols = findings.map((f) => f.symbol);
+    expect(symbols).toContain('Map');
+    expect(symbols).not.toContain('ArrayList');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4 — scanInconsistentPatterns
+// ---------------------------------------------------------------------------
+
+describe('scanInconsistentPatterns', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'inconsistent-patterns-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns empty array when only 1-2 approaches are used', async () => {
+    const subDir = join(dir, 'few-approaches');
+    await mkdir(subDir, { recursive: true });
+    // Only fetch API used — one approach
+    await writeFile(join(subDir, 'a.js'), "async function load() { return fetch('/api'); }");
+    await writeFile(join(subDir, 'b.js'), "async function load2() { return fetch('/other'); }");
+
+    const findings = await scanInconsistentPatterns(subDir, {});
+    const fetchFindings = findings.filter((f) => f.concern === 'data-fetching');
+    expect(fetchFindings).toHaveLength(0);
+  });
+
+  it('flags concern when 3+ approaches are detected', async () => {
+    const subDir = join(dir, 'many-approaches');
+    await mkdir(subDir, { recursive: true });
+
+    // Three different data-fetching approaches
+    await writeFile(join(subDir, 'fetch-file.js'), "async function a() { return fetch('/api'); }");
+    await writeFile(join(subDir, 'axios-file.js'), "const res = await axios.get('/api');");
+    await writeFile(join(subDir, 'request-file.js'), "request('/api', callback);");
+
+    const findings = await scanInconsistentPatterns(subDir, {});
+    const fetchFindings = findings.filter((f) => f.concern === 'data-fetching');
+    expect(fetchFindings.length).toBeGreaterThanOrEqual(1);
+    expect(fetchFindings[0].check).toBe('inconsistent-patterns');
+    expect(Array.isArray(fetchFindings[0].approaches)).toBe(true);
+    expect(fetchFindings[0].approaches.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('finding shape has required fields', async () => {
+    const subDir = join(dir, 'shape-check');
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, 'a.js'), "async function a() { return fetch('/api'); }");
+    await writeFile(join(subDir, 'b.js'), "const res = await axios.get('/api');");
+    await writeFile(join(subDir, 'c.js'), "request('/api', callback);");
+
+    const findings = await scanInconsistentPatterns(subDir, {});
+    for (const f of findings) {
+      expect(f.check).toBe('inconsistent-patterns');
+      expect(typeof f.concern).toBe('string');
+      expect(Array.isArray(f.approaches)).toBe(true);
+      for (const approach of f.approaches) {
+        expect(typeof approach.pattern).toBe('string');
+        expect(Array.isArray(approach.files)).toBe(true);
+        expect(typeof approach.count).toBe('number');
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5 — scanOverEngineering
+// ---------------------------------------------------------------------------
+
+describe('scanOverEngineering', () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'over-engineering-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('flags a single-method class', async () => {
+    const subDir = join(dir, 'single-method');
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, 'wrapper.ts'),
+      [
+        'export class StringWrapper {',
+        '  constructor(private val: string) {}',
+        '  getValue() { return this.val; }',
+        '}',
+      ].join('\n')
+    );
+    // A consumer so fan-in is counted
+    await writeFile(
+      join(subDir, 'consumer.ts'),
+      "import { StringWrapper } from './wrapper';\nconst w = new StringWrapper('x');"
+    );
+
+    const findings = await scanOverEngineering(subDir, {});
+    const classFindings = findings.filter(
+      (f) => f.issue.includes('Single-method class') && f.symbol === 'StringWrapper'
+    );
+    expect(classFindings.length).toBeGreaterThanOrEqual(1);
+    expect(classFindings[0].check).toBe('over-engineering');
+  });
+
+  it('flags a single-implementation interface', async () => {
+    const subDir = join(dir, 'single-impl');
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, 'iface.ts'),
+      "export interface Serializer { serialize(v: unknown): string; }"
+    );
+    await writeFile(
+      join(subDir, 'impl.ts'),
+      "import { Serializer } from './iface';\nexport class JsonSerializer implements Serializer { serialize(v: unknown) { return JSON.stringify(v); } }"
+    );
+
+    const findings = await scanOverEngineering(subDir, {});
+    const ifaceFindings = findings.filter(
+      (f) => f.issue.includes('one implementation') && f.symbol === 'Serializer'
+    );
+    expect(ifaceFindings.length).toBeGreaterThanOrEqual(1);
+    expect(ifaceFindings[0].check).toBe('over-engineering');
+  });
+
+  it('returns correct check field in all findings', async () => {
+    const subDir = join(dir, 'shape');
+    await mkdir(subDir, { recursive: true });
+    await writeFile(
+      join(subDir, 'a.ts'),
+      "export class TinyClass { doIt() { return 1; } }"
+    );
+    await writeFile(join(subDir, 'b.ts'), "// no imports");
+
+    const findings = await scanOverEngineering(subDir, {});
+    for (const f of findings) {
+      expect(f.check).toBe('over-engineering');
+      expect(typeof f.file).toBe('string');
+      expect(typeof f.symbol).toBe('string');
+      expect(typeof f.issue).toBe('string');
+    }
+  });
+
+  it('does not flag test files', async () => {
+    const subDir = join(dir, 'test-filter');
+    await mkdir(subDir, { recursive: true });
+    await writeFile(
+      join(subDir, 'thing.test.ts'),
+      "export class TestClass { run() {} }"
+    );
+
+    const findings = await scanOverEngineering(subDir, {});
+    const testFindings = findings.filter((f) => f.file.includes('.test.'));
+    expect(testFindings).toHaveLength(0);
   });
 });

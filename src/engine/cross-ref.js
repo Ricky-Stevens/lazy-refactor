@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, extname, basename } from 'node:path';
+import { exec } from 'node:child_process';
 
 // Language -> file extensions
 const LANGUAGE_EXTENSIONS = {
@@ -181,6 +182,24 @@ export function extractExports(content, language) {
     }
   }
 
+  // TypeScript: handle named re-export blocks — export { foo, bar } / export { foo as bar }
+  // These appear as a brace group that does not start with `export default` or keyword.
+  if (language === 'typescript') {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // Match: export { ... } with optional "from '...'"
+      const m = line.match(/^export\s+\{([^}]+)\}/);
+      if (m) {
+        for (const segment of m[1].split(',')) {
+          // "foo as bar" → exported name is "bar"; plain "foo" → "foo"
+          const parts = segment.trim().split(/\s+as\s+/);
+          const exportedName = parts[parts.length - 1].trim();
+          if (exportedName) exports.push({ name: exportedName, line: i });
+        }
+      }
+    }
+  }
+
   return exports;
 }
 
@@ -274,6 +293,33 @@ export function extractImports(content, language) {
         }
       }
     }
+
+    if (language === 'csharp') {
+      // using X.Y.Z;  or  using Alias = X.Y.Z;
+      // For "using Alias = X.Y.Z;" we want the alias (left of =)
+      const aliasMatch = trimmed.match(/^using\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+      if (aliasMatch) {
+        imports.push(aliasMatch[1]);
+        continue;
+      }
+      // Plain using directive — extract last segment (class/namespace name)
+      const plainMatch = trimmed.match(/^using\s+([\w.]+)\s*;/);
+      if (plainMatch) {
+        const segments = plainMatch[1].split('.');
+        imports.push(segments[segments.length - 1]);
+        continue;
+      }
+    }
+
+    if (language === 'java') {
+      // import static X.Y.Z;  or  import X.Y.Z;
+      const javaMatch = trimmed.match(/^import\s+(?:static\s+)?([\w.]+)\s*;/);
+      if (javaMatch) {
+        const segments = javaMatch[1].split('.');
+        imports.push(segments[segments.length - 1]);
+        continue;
+      }
+    }
   }
 
   return imports;
@@ -357,6 +403,31 @@ export async function detectManifest(dir) {
 }
 
 /**
+ * Return a Set of absolute file paths that were added to git within the last `days` days.
+ * Returns an empty Set if git is unavailable or the directory is not a repository.
+ * @param {string} repoPath
+ * @param {number} [days=30]
+ * @returns {Promise<Set<string>>}
+ */
+export async function getRecentlyAddedFiles(repoPath, days = 30) {
+  return new Promise((resolve) => {
+    const cmd = `git -C "${repoPath}" log --diff-filter=A --since="${days} days ago" --name-only --pretty=format:""`;
+    exec(cmd, (err, stdout) => {
+      if (err) {
+        resolve(new Set());
+        return;
+      }
+      const files = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((rel) => join(repoPath, rel));
+      resolve(new Set(files));
+    });
+  });
+}
+
+/**
  * Scan for dead code (exported symbols with no matching imports anywhere else).
  * @param {string} path - Directory to scan
  * @param {object} [rules] - Optional rule overrides (unused currently; patterns are built-in)
@@ -393,12 +464,17 @@ export async function scanDeadCode(path, rules = {}, options = {}) {
   }
 
   // Step 3: cross-reference — exports with zero matching imports = dead code
+  // Optionally boost confidence for recently-added files (likely AI pivot debris)
+  const recentFiles = await getRecentlyAddedFiles(path, 30);
+
   const findings = [];
   for (const { file, language, exports } of fileData) {
     // Skip entry points and test files
     if (isEntryPoint(file) || isTestFile(file)) continue;
 
-    const confidence = language === 'python' ? 0.6 : 0.9;
+    let confidence = language === 'python' ? 0.6 : 0.9;
+    // Boost confidence for files recently added to git — more likely to be unused pivot code
+    if (recentFiles.has(file)) confidence = Math.min(1, confidence + 0.05);
 
     for (const { name, line } of exports) {
       if (!allImportedSymbols.has(name)) {
@@ -521,6 +597,316 @@ export async function scanUnusedImports(path, options = {}) {
             if (!new RegExp(`\\b${name}\\b`).test(rest)) {
               findings.push({ check: 'unused-import', file, symbol: name, importLine: i });
             }
+          }
+        }
+      }
+    }
+
+    if (language === 'csharp') {
+      for (let i = 0; i < lines.length; i++) {
+        const trimmedLine = lines[i].trim();
+        // using Alias = X.Y.Z;
+        const aliasMatch = trimmedLine.match(/^using\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+        if (aliasMatch) {
+          const name = aliasMatch[1];
+          const rest = lines.slice(i + 1).join('\n');
+          if (!new RegExp(`\\b${name}\\b`).test(rest)) {
+            findings.push({ check: 'unused-import', file, symbol: name, importLine: i });
+          }
+          continue;
+        }
+        // using X.Y.Z;
+        const plainMatch = trimmedLine.match(/^using\s+([\w.]+)\s*;/);
+        if (plainMatch) {
+          const segments = plainMatch[1].split('.');
+          const name = segments[segments.length - 1];
+          const rest = lines.slice(i + 1).join('\n');
+          if (!new RegExp(`\\b${name}\\b`).test(rest)) {
+            findings.push({ check: 'unused-import', file, symbol: name, importLine: i });
+          }
+        }
+      }
+    }
+
+    if (language === 'java') {
+      for (let i = 0; i < lines.length; i++) {
+        const trimmedLine = lines[i].trim();
+        const javaMatch = trimmedLine.match(/^import\s+(?:static\s+)?([\w.]+)\s*;/);
+        if (javaMatch) {
+          const segments = javaMatch[1].split('.');
+          const name = segments[segments.length - 1];
+          const rest = lines.slice(i + 1).join('\n');
+          if (!new RegExp(`\\b${name}\\b`).test(rest)) {
+            findings.push({ check: 'unused-import', file, symbol: name, importLine: i });
+          }
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Check 10 — Inconsistent patterns
+// ---------------------------------------------------------------------------
+
+const CONCERN_KEYWORDS = {
+  'error-handling': ['try', 'catch', 'throw', 'Error'],
+  logging: ['log', 'logger', 'console', 'print'],
+  'data-fetching': ['fetch', 'axios', 'http', 'request'],
+  config: ['config', 'env', 'settings', 'getConfig'],
+  validation: ['validate', 'schema', 'assert', 'check'],
+};
+
+/**
+ * Scan for inconsistent coding patterns across concerns.
+ * Flags concerns where 3+ different approaches are found across the codebase.
+ * @param {string} path - Directory to scan
+ * @param {object} [options]
+ * @param {string[]} [options.exclude]
+ * @param {string[]} [options.languages]
+ * @returns {Promise<Array<{check: string, concern: string, approaches: Array<{pattern: string, files: string[], count: number}>}>>}
+ */
+export async function scanInconsistentPatterns(path, options = {}) {
+  const files = await collectFiles(path, options);
+  const findings = [];
+
+  // Approach-detection patterns per concern
+  const approachPatterns = {
+    'error-handling': [
+      { pattern: 'try/catch with custom Error', re: /throw\s+new\s+[A-Z][A-Za-z]*Error/ },
+      { pattern: 'try/catch', re: /\btry\s*\{[\s\S]*?\bcatch\b/ },
+      { pattern: 'promise .catch()', re: /\.catch\s*\(/ },
+      { pattern: 'error callback (err, data)', re: /function\s*\([^)]*\berr\b/ },
+    ],
+    logging: [
+      { pattern: 'console.*', re: /\bconsole\.(log|warn|error|info|debug)\s*\(/ },
+      { pattern: 'logger object', re: /\blogger\.(log|warn|error|info|debug)\s*\(/ },
+      { pattern: 'log() call', re: /\blog\s*\(/ },
+      { pattern: 'print()', re: /\bprint\s*\(/ },
+    ],
+    'data-fetching': [
+      { pattern: 'fetch API', re: /\bfetch\s*\(/ },
+      { pattern: 'axios', re: /\baxios\b/ },
+      { pattern: 'http/https module', re: /\bhttp(s)?\.request\b|\bhttp(s)?\.get\b/ },
+      { pattern: 'request library', re: /\brequest\s*\(/ },
+    ],
+    config: [
+      { pattern: 'process.env', re: /\bprocess\.env\b/ },
+      { pattern: 'getConfig()', re: /\bgetConfig\s*\(/ },
+      { pattern: 'config object', re: /\bconfig\s*\.\s*[A-Za-z]/ },
+      { pattern: 'settings object', re: /\bsettings\s*\.\s*[A-Za-z]/ },
+    ],
+    validation: [
+      { pattern: 'schema validation (zod/yup/joi)', re: /\b(z\.|yup\.|joi\.)/ },
+      { pattern: 'assert()', re: /\bassert\s*\(/ },
+      { pattern: 'validate()', re: /\bvalidate\s*\(/ },
+      { pattern: 'manual check (if !x throw)', re: /if\s*\(![^)]+\)\s*(throw|return)/ },
+    ],
+  };
+
+  // Categorise files by concern keywords, then by approach
+  for (const [concern, keywords] of Object.entries(CONCERN_KEYWORDS)) {
+    // Map approach pattern label -> list of files using it
+    const approachFiles = {};
+    for (const { pattern } of approachPatterns[concern] ?? []) {
+      approachFiles[pattern] = [];
+    }
+
+    for (const file of files) {
+      if (isTestFile(file)) continue;
+      let content;
+      try {
+        content = await readFile(file, 'utf8');
+      } catch {
+        continue;
+      }
+
+      // Only care about files that mention at least one concern keyword
+      const hasConcern = keywords.some((kw) => content.includes(kw));
+      if (!hasConcern) continue;
+
+      for (const { pattern, re } of approachPatterns[concern] ?? []) {
+        if (re.test(content)) {
+          approachFiles[pattern].push(file);
+        }
+      }
+    }
+
+    // Collect approaches that are actually used (at least one file)
+    const usedApproaches = Object.entries(approachFiles)
+      .filter(([, fileList]) => fileList.length > 0)
+      .map(([pattern, fileList]) => ({ pattern, files: fileList, count: fileList.length }));
+
+    if (usedApproaches.length >= 3) {
+      findings.push({
+        check: 'inconsistent-patterns',
+        concern,
+        approaches: usedApproaches,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Check 13 — Over-engineering
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan for over-engineered code: single-method classes, pass-through functions,
+ * low fan-in abstractions, and single-implementation interfaces.
+ * @param {string} path - Directory to scan
+ * @param {object} [options]
+ * @param {string[]} [options.exclude]
+ * @param {string[]} [options.languages]
+ * @returns {Promise<Array<{check: string, file: string, symbol: string, issue: string}>>}
+ */
+export async function scanOverEngineering(path, options = {}) {
+  const files = await collectFiles(path, options);
+  const findings = [];
+
+  // Build import graph: for each file, which other files import it?
+  // fan-in[file] = set of files that import symbols from `file`
+  const fileContents = new Map();
+  const fileLanguages = new Map();
+  const fileExports = new Map();
+  const fileImportedSymbols = new Map(); // file -> Set<symbol name>
+
+  for (const file of files) {
+    const language = detectLanguage(file);
+    if (!language) continue;
+    let content;
+    try {
+      content = await readFile(file, 'utf8');
+    } catch {
+      continue;
+    }
+    fileContents.set(file, content);
+    fileLanguages.set(file, language);
+    fileExports.set(file, extractExports(content, language));
+    fileImportedSymbols.set(file, new Set(extractImports(content, language)));
+  }
+
+  // fan-in count: how many files import at least one symbol from a given file
+  const fanIn = new Map();
+  for (const file of fileContents.keys()) {
+    fanIn.set(file, 0);
+  }
+  const exportedByFile = new Map();
+  for (const [file, exps] of fileExports) {
+    exportedByFile.set(file, new Set(exps.map((e) => e.name)));
+  }
+
+  for (const [importerFile, importedSymbols] of fileImportedSymbols) {
+    for (const [providerFile, providedSymbols] of exportedByFile) {
+      if (providerFile === importerFile) continue;
+      const overlap = [...importedSymbols].some((sym) => providedSymbols.has(sym));
+      if (overlap) {
+        fanIn.set(providerFile, (fanIn.get(providerFile) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Regex to detect pass-through functions (single-statement body that returns a call)
+  const passThroughRe = /(?:function\s+\w+\s*\([^)]*\)|(?:const|let|var)\s+\w+\s*=\s*(?:\([^)]*\)|[^=])\s*=>)\s*\{?\s*return\s+\w+[\w.]*\([^)]*\)\s*;?\s*\}?/g;
+
+  // Regex to find class definitions and their methods (TypeScript/JS)
+  const classRe = /class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+  const methodRe = /^\s+(?:(?:public|private|protected|static|async|get|set)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gm;
+  const interfaceRe = /interface\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+  const implementsRe = /implements\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+  for (const [file, content] of fileContents) {
+    if (isTestFile(file) || isEntryPoint(file)) continue;
+    const language = fileLanguages.get(file);
+
+    // Low fan-in check (imported by 0–2 other files)
+    const fi = fanIn.get(file) ?? 0;
+    const isLowFanIn = fi <= 2;
+
+    // Pass-through / delegation functions
+    if (isLowFanIn) {
+      const passThroughs = content.match(passThroughRe) ?? [];
+      const totalFunctions = (content.match(/(?:function\s+\w+|=>\s*\{|=>\s*\w)/g) ?? []).length;
+      if (passThroughs.length > 0 && totalFunctions > 0 && passThroughs.length / totalFunctions >= 0.5) {
+        findings.push({
+          check: 'over-engineering',
+          file,
+          symbol: basename(file),
+          issue: `Low fan-in (${fi} importers) with ${passThroughs.length}/${totalFunctions} pass-through functions — may be unnecessary abstraction layer`,
+        });
+      }
+    }
+
+    // Single-method classes (TypeScript/JS only)
+    if (language === 'typescript') {
+      let classMatch;
+      classRe.lastIndex = 0;
+      while ((classMatch = classRe.exec(content)) !== null) {
+        const className = classMatch[1];
+        // Extract the class body (rough: from { to matching })
+        const startIdx = content.indexOf('{', classMatch.index);
+        if (startIdx === -1) continue;
+        let depth = 0;
+        let endIdx = startIdx;
+        for (let i = startIdx; i < content.length; i++) {
+          if (content[i] === '{') depth++;
+          else if (content[i] === '}') {
+            depth--;
+            if (depth === 0) { endIdx = i; break; }
+          }
+        }
+        const classBody = content.slice(startIdx, endIdx + 1);
+
+        // Count methods (excluding constructor)
+        const methods = [];
+        let methodMatch;
+        methodRe.lastIndex = 0;
+        while ((methodMatch = methodRe.exec(classBody)) !== null) {
+          if (methodMatch[1] !== 'constructor') methods.push(methodMatch[1]);
+        }
+
+        if (methods.length === 1) {
+          findings.push({
+            check: 'over-engineering',
+            file,
+            symbol: className,
+            issue: `Single-method class (only method: ${methods[0]}) — a plain function may suffice`,
+          });
+        }
+      }
+
+      // Single-implementation interfaces
+      // Collect all interface names and all implements clauses
+      const interfaces = new Map(); // name -> 0
+      let ifaceMatch;
+      interfaceRe.lastIndex = 0;
+      while ((ifaceMatch = interfaceRe.exec(content)) !== null) {
+        interfaces.set(ifaceMatch[1], 0);
+      }
+      if (interfaces.size > 0) {
+        // Count across all files how many classes implement each interface
+        for (const [, otherContent] of fileContents) {
+          let implMatch;
+          implementsRe.lastIndex = 0;
+          while ((implMatch = implementsRe.exec(otherContent)) !== null) {
+            const name = implMatch[1];
+            if (interfaces.has(name)) {
+              interfaces.set(name, interfaces.get(name) + 1);
+            }
+          }
+        }
+        for (const [ifaceName, count] of interfaces) {
+          if (count === 1) {
+            findings.push({
+              check: 'over-engineering',
+              file,
+              symbol: ifaceName,
+              issue: `Interface ${ifaceName} has only one implementation — may be unnecessary abstraction`,
+            });
           }
         }
       }
