@@ -483,13 +483,22 @@ describe('checkOutdatedDeps', () => {
     }
   });
 
-  it('produces Go advisory findings when go.mod exists', async () => {
+  it('emits Go findings only when detectPattern matches source files', async () => {
     await writeFile(join(dir, 'go.mod'), 'module example.com/app\ngo 1.21\n');
+    // Write a .go file that actually uses ioutil
+    await writeFile(join(dir, 'main.go'), 'package main\n\nimport "io/ioutil"\n\nfunc main() { ioutil.ReadFile("x") }\n');
     const findings = await checkOutdatedDeps(dir, ['go']);
-    // Go patterns surface ioutil advisories at project level
     expect(findings.length).toBeGreaterThan(0);
     expect(findings[0].category).toBe('outdated');
     expect(findings[0].check).toBe('outdated-pattern');
+  });
+
+  it('emits no Go findings when source files do not match any detectPattern', async () => {
+    await writeFile(join(dir, 'go.mod'), 'module example.com/app\ngo 1.21\n');
+    // Write a .go file with no deprecated patterns
+    await writeFile(join(dir, 'main.go'), 'package main\n\nimport "os"\n\nfunc main() { os.ReadFile("x") }\n');
+    const findings = await checkOutdatedDeps(dir, ['go']);
+    expect(findings.length).toBe(0);
   });
 });
 

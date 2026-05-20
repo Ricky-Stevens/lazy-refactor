@@ -285,28 +285,52 @@ export async function checkOutdatedDeps(projectPath, languages) {
     }
   }
 
-  // Go: scan go.mod for deprecated stdlib usages by checking require lines
+  // Go: scan *.go source files for each entry's detectPattern before emitting
   if (languages.includes('go')) {
     const entries = outdatedPatterns['go'] ?? [];
     const goMod = await tryRead('go.mod');
-    if (goMod !== null) {
+    if (goMod !== null && entries.length > 0) {
+      // Collect all .go file contents recursively
+      async function collectGoSources(dir) {
+        let contents = [];
+        try {
+          const items = await readdir(dir, { withFileTypes: true });
+          for (const item of items) {
+            const full = join(dir, item.name);
+            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'vendor') {
+              contents = contents.concat(await collectGoSources(full));
+            } else if (item.isFile() && item.name.endsWith('.go')) {
+              try {
+                contents.push(await readFile(full, 'utf8'));
+              } catch {
+                // skip unreadable files
+              }
+            }
+          }
+        } catch {
+          // skip unreadable dirs
+        }
+        return contents;
+      }
+
+      const goSources = await collectGoSources(projectPath);
+      const combinedSource = goSources.join('\n');
+
       for (const entry of entries) {
-        // go.mod contains module paths in require blocks; ioutil patterns are stdlib
-        // so we detect them by their detectPattern against go.mod and source via description
-        // For go.mod specifically: flag if any require line references known deprecated paths
-        // (ioutil is stdlib so won't appear in go.mod — we note this as a code-level pattern)
-        // We still surface the finding as a migration advisory at the project level.
+        const pattern = new RegExp(entry.detectPattern);
+        if (!pattern.test(combinedSource)) continue;
+
         findings.push({
           check: 'outdated-pattern',
           severity: entry.severity,
           category: 'outdated',
           locations: [{ file: 'go.mod', startLine: 1 }],
-          description: `Potentially outdated usage '${entry.from}': ${entry.description}`,
+          description: `Outdated usage '${entry.from}': ${entry.description}`,
           from: entry.from,
           to: entry.to,
           suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
           fixable: false,
-          confidence: 0.5,
+          confidence: 0.7,
         });
       }
     }
