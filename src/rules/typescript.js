@@ -210,7 +210,7 @@ const rules = [
     category: 'full-library-import',
     description: 'Full underscore.js library imported — causes large bundle size; prefer lodash-es or native equivalents',
     language: 'typescript',
-    pattern: 'import\\s+_\\s+from\\s+[\'"]underscore[\'"]',
+    pattern: 'import\\s+(?:_|underscore)\\s+from\\s+[\'"]underscore[\'"]',
     antiPattern: null,
     filePattern: '**/*.{ts,tsx,js,jsx}',
     exclude: [

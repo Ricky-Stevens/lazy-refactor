@@ -19,7 +19,7 @@ const rules = [
     category: 'error-handling',
     description: 'Error return value discarded with _ — prevents error propagation and hides failures',
     language: 'go',
-    pattern: '_\\s*(?::=|=)\\s*\\w[\\w.]*\\s*\\(',
+    pattern: '(?:_,\\s*)?_\\s*(?::=|=)\\s*\\w[\\w.]*\\s*\\(',
     antiPattern: 'defer\\s+\\w+\\.Close|_\\s*=\\s*\\w+\\.Close\\(|_\\s*=\\s*\\w+\\.Flush\\(',
     filePattern: '**/*.go',
     exclude: [
