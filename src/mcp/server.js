@@ -36,7 +36,8 @@ import goRules from '../rules/go.js';
 import pythonRules from '../rules/python.js';
 import csharpRules from '../rules/csharp.js';
 import javaRules from '../rules/java.js';
-import outdatedPatternsRules from '../rules/outdated-patterns.js';
+// outdated-patterns exports a Record<language, Array<{from,to,...}>> — different shape from scan rules.
+// It is not included in buildRules(); it is available for future tooling that handles migration suggestions.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -220,7 +221,8 @@ export async function detectLanguages(projectPath) {
  * @returns {Array}
  */
 function buildRules(languages) {
-  const rules = [...commonRules, ...outdatedPatternsRules];
+  // Start with common rules that apply to all languages
+  const rules = [...commonRules];
   for (const lang of languages) {
     if (LANGUAGE_RULES[lang]) {
       rules.push(...LANGUAGE_RULES[lang]);
