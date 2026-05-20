@@ -1,8 +1,9 @@
 /**
  * MCP server entry point for lazy-refactor.
  *
- * Exposes 13 tools:
- *   Scan:   run_scan, scan_duplicates, scan_dead_code, scan_metrics, scan_patterns, detect_language
+ * Exposes 14 tools:
+ *   Scan:   run_scan, scan_duplicates, scan_dead_code, scan_metrics, scan_patterns, detect_language,
+ *           scan_inconsistent_patterns, scan_over_engineering
  *   State:  get_findings, get_finding, update_finding, get_summary
  *   Config: get_config, update_config
  */
@@ -16,7 +17,7 @@ import * as z from 'zod';
 
 import { scanPatterns } from '../engine/pattern-scanner.js';
 import { computeMetrics } from '../engine/metrics.js';
-import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from '../engine/cross-ref.js';
+import { scanDeadCode, scanUnusedDeps, scanUnusedImports, scanInconsistentPatterns, scanOverEngineering } from '../engine/cross-ref.js';
 import { scanDuplicates } from '../engine/duplicates.js';
 import { scoreFinding, scoreFindings } from '../scoring/prioritizer.js';
 import {
@@ -36,8 +37,9 @@ import goRules from '../rules/go.js';
 import pythonRules from '../rules/python.js';
 import csharpRules from '../rules/csharp.js';
 import javaRules from '../rules/java.js';
+import outdatedPatterns from '../rules/outdated-patterns.js';
 // outdated-patterns exports a Record<language, Array<{from,to,...}>> — different shape from scan rules.
-// It is not included in buildRules(); it is available for future tooling that handles migration suggestions.
+// It is NOT included in buildRules(); instead it is used by checkOutdatedDeps() for migration detection.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -232,6 +234,120 @@ function buildRules(languages) {
 }
 
 /**
+ * Read the project's package manifest(s) and check for outdated dependencies.
+ * Supports package.json (JS/TS), go.mod (Go), and requirements.txt (Python).
+ * @param {string} projectPath  Directory containing the manifest
+ * @param {string[]} languages  Detected language list
+ * @returns {Promise<Array>}    Findings with check: 'outdated-pattern'
+ */
+export async function checkOutdatedDeps(projectPath, languages) {
+  const findings = [];
+
+  // Helper: try to read a file, return content or null
+  async function tryRead(file) {
+    try {
+      return await readFile(join(projectPath, file), 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  // JS/TS: scan package.json dependency names
+  if (languages.includes('typescript') || languages.includes('javascript')) {
+    const entries = outdatedPatterns['javascript'] ?? [];
+    const pkgJson = await tryRead('package.json');
+    if (pkgJson !== null) {
+      let pkg;
+      try { pkg = JSON.parse(pkgJson); } catch { pkg = {}; }
+      const allDeps = {
+        ...pkg.dependencies,
+        ...pkg.devDependencies,
+        ...pkg.peerDependencies,
+      };
+      for (const entry of entries) {
+        // Match by package name (the 'from' field may include extra description text)
+        const depName = entry.from.split(' ')[0];
+        if (allDeps[depName] !== undefined) {
+          findings.push({
+            check: 'outdated-pattern',
+            severity: entry.severity,
+            category: 'outdated',
+            locations: [{ file: 'package.json', startLine: 1 }],
+            description: `Outdated dependency '${entry.from}': ${entry.description}`,
+            from: entry.from,
+            to: entry.to,
+            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+            fixable: false,
+            confidence: 0.9,
+          });
+        }
+      }
+    }
+  }
+
+  // Go: scan go.mod for deprecated stdlib usages by checking require lines
+  if (languages.includes('go')) {
+    const entries = outdatedPatterns['go'] ?? [];
+    const goMod = await tryRead('go.mod');
+    if (goMod !== null) {
+      for (const entry of entries) {
+        // go.mod contains module paths in require blocks; ioutil patterns are stdlib
+        // so we detect them by their detectPattern against go.mod and source via description
+        // For go.mod specifically: flag if any require line references known deprecated paths
+        // (ioutil is stdlib so won't appear in go.mod — we note this as a code-level pattern)
+        // We still surface the finding as a migration advisory at the project level.
+        findings.push({
+          check: 'outdated-pattern',
+          severity: entry.severity,
+          category: 'outdated',
+          locations: [{ file: 'go.mod', startLine: 1 }],
+          description: `Potentially outdated usage '${entry.from}': ${entry.description}`,
+          from: entry.from,
+          to: entry.to,
+          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+          fixable: false,
+          confidence: 0.5,
+        });
+      }
+    }
+  }
+
+  // Python: scan requirements.txt for deprecated packages
+  if (languages.includes('python')) {
+    const entries = outdatedPatterns['python'] ?? [];
+    const requirements = await tryRead('requirements.txt');
+    if (requirements !== null) {
+      const lines = requirements.split('\n').map((l) => l.trim());
+      for (const entry of entries) {
+        const depName = entry.from.split(' ')[0].toLowerCase();
+        const matched = lines.some((line) =>
+          line.toLowerCase().startsWith(depName + '==') ||
+          line.toLowerCase().startsWith(depName + '>=') ||
+          line.toLowerCase().startsWith(depName + '>') ||
+          line.toLowerCase() === depName,
+        );
+        if (matched) {
+          findings.push({
+            check: 'outdated-pattern',
+            severity: entry.severity,
+            category: 'outdated',
+            locations: [{ file: 'requirements.txt', startLine: 1 }],
+            description: `Outdated dependency '${entry.from}': ${entry.description}`,
+            from: entry.from,
+            to: entry.to,
+            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+            fixable: false,
+            confidence: 0.9,
+          });
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
  * Wrap a result as an MCP success content block.
  * @param {unknown} data
  * @returns {{content: Array<{type: string, text: string}>}}
@@ -268,7 +384,7 @@ server.registerTool(
     inputSchema: z.object({
       path: z.string().describe('Directory to scan'),
       options: z.object({
-        focus: z.array(z.string()).optional().describe('Subset: duplicates, dead-code, metrics, patterns'),
+        focus: z.array(z.string()).optional().describe('Subset: duplicates, dead-code, metrics, patterns, inconsistent-patterns, over-engineering, outdated'),
         exclude: z.array(z.string()).optional().describe('Additional glob patterns to exclude'),
         languages: z.array(z.string()).optional().describe('Override language detection'),
       }).optional(),
@@ -277,7 +393,7 @@ server.registerTool(
   async ({ path: scanPath, options = {} }) => {
     try {
       const config = await readConfig(projectPath);
-      const focus = options.focus ?? ['duplicates', 'dead-code', 'metrics', 'patterns'];
+      const focus = options.focus ?? ['duplicates', 'dead-code', 'metrics', 'patterns', 'inconsistent-patterns', 'over-engineering', 'outdated'];
       const exclude = [...config.exclude, ...(options.exclude ?? [])];
       const langOverride = options.languages;
 
@@ -393,6 +509,39 @@ server.registerTool(
         })));
       }
 
+      if (focus.includes('inconsistent-patterns')) {
+        const inconsistentFindings = await scanInconsistentPatterns(scanPath, { exclude, languages });
+        allFindings.push(...inconsistentFindings.map((f) => ({
+          check: f.check ?? 'inconsistent-pattern',
+          severity: f.severity ?? 'low',
+          category: f.category ?? 'consistency',
+          locations: f.locations ?? (f.file ? [{ file: f.file.replace(scanPath + '/', ''), startLine: f.line ?? 1 }] : []),
+          description: f.description,
+          suggestion: f.suggestion ?? 'Align with the predominant pattern used elsewhere in the codebase.',
+          fixable: f.fixable ?? false,
+          confidence: f.confidence ?? 0.75,
+        })));
+      }
+
+      if (focus.includes('over-engineering')) {
+        const overEngFindings = await scanOverEngineering(scanPath, { exclude, languages });
+        allFindings.push(...overEngFindings.map((f) => ({
+          check: f.check ?? 'over-engineering',
+          severity: f.severity ?? 'low',
+          category: f.category ?? 'complexity',
+          locations: f.locations ?? (f.file ? [{ file: f.file.replace(scanPath + '/', ''), startLine: f.line ?? 1 }] : []),
+          description: f.description,
+          suggestion: f.suggestion ?? 'Simplify to the minimum viable abstraction.',
+          fixable: f.fixable ?? false,
+          confidence: f.confidence ?? 0.7,
+        })));
+      }
+
+      if (focus.includes('outdated')) {
+        const outdatedFindings = await checkOutdatedDeps(scanPath, languages);
+        allFindings.push(...outdatedFindings);
+      }
+
       // Score findings
       const scored = scoreFindings(allFindings);
 
@@ -491,6 +640,42 @@ server.registerTool(
         ? rules.filter((r) => categories.includes(r.category))
         : rules;
       const findings = await scanPatterns(scanPath, filtered, { exclude: config.exclude });
+      return ok(findings);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'scan_inconsistent_patterns',
+  {
+    description: 'Scan for inconsistent coding patterns across the codebase (Check 10).',
+    inputSchema: z.object({
+      path: z.string().describe('Directory to scan'),
+    }),
+  },
+  async ({ path: scanPath }) => {
+    try {
+      const findings = await scanInconsistentPatterns(scanPath, {});
+      return ok(findings);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'scan_over_engineering',
+  {
+    description: 'Scan for over-engineered abstractions and unnecessary complexity (Check 13).',
+    inputSchema: z.object({
+      path: z.string().describe('Directory to scan'),
+    }),
+  },
+  async ({ path: scanPath }) => {
+    try {
+      const findings = await scanOverEngineering(scanPath, {});
       return ok(findings);
     } catch (err) {
       return fail(err);

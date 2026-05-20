@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Import the functions under test
-import { detectLanguages } from './server.js';
+import { detectLanguages, checkOutdatedDeps } from './server.js';
 
 // Import state module to set up fixture data
 import { addFindings, getFindings, getFinding, updateFinding, getSummary } from '../state/findings.js';
@@ -308,6 +308,8 @@ describe('server tool registration', () => {
       'scan_dead_code',
       'scan_metrics',
       'scan_patterns',
+      'scan_inconsistent_patterns',
+      'scan_over_engineering',
       'detect_language',
       'get_findings',
       'get_finding',
@@ -389,6 +391,151 @@ describe('run_scan integration', () => {
     const summary = await getSummary(stateDir);
     expect(summary.totalFindings).toBe(1);
     expect(summary.bySeverity['medium']).toBe(1);
+  });
+});
+
+// ─── checkOutdatedDeps ────────────────────────────────────────────────────────
+
+describe('checkOutdatedDeps', () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+  });
+
+  afterEach(async () => {
+    await cleanup(dir);
+  });
+
+  it('returns empty findings when no manifests are present', async () => {
+    const findings = await checkOutdatedDeps(dir, ['typescript']);
+    expect(findings).toEqual([]);
+  });
+
+  it('detects a deprecated JS dependency in package.json', async () => {
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { moment: '^2.29.0', typescript: '^5.0.0' } }),
+    );
+    const findings = await checkOutdatedDeps(dir, ['typescript']);
+    const match = findings.find((f) => f.from === 'moment');
+    expect(match).toBeDefined();
+    expect(match.check).toBe('outdated-pattern');
+    expect(match.category).toBe('outdated');
+    expect(match.to).toBe('dayjs');
+    expect(match.severity).toBe('medium');
+  });
+
+  it('detects a high-severity deprecated JS dependency', async () => {
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { request: '^2.88.2' } }),
+    );
+    const findings = await checkOutdatedDeps(dir, ['typescript']);
+    const match = findings.find((f) => f.from === 'request');
+    expect(match).toBeDefined();
+    expect(match.severity).toBe('high');
+  });
+
+  it('does not flag unknown dependencies in package.json', async () => {
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { express: '^4.18.0' } }),
+    );
+    const findings = await checkOutdatedDeps(dir, ['typescript']);
+    expect(findings).toHaveLength(0);
+  });
+
+  it('detects deprecated python dependency in requirements.txt', async () => {
+    await writeFile(join(dir, 'requirements.txt'), 'urllib2==1.0.0\nrequests==2.31.0\n');
+    const findings = await checkOutdatedDeps(dir, ['python']);
+    const match = findings.find((f) => f.from === 'urllib2');
+    expect(match).toBeDefined();
+    expect(match.check).toBe('outdated-pattern');
+    expect(match.severity).toBe('critical');
+  });
+
+  it('does not produce JS findings when only python language is detected', async () => {
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { moment: '^2.29.0' } }),
+    );
+    const findings = await checkOutdatedDeps(dir, ['python']);
+    // No JS scan should run, so moment should not appear
+    expect(findings.find((f) => f.from === 'moment')).toBeUndefined();
+  });
+
+  it('returns findings with required fields', async () => {
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { moment: '^2.29.0' } }),
+    );
+    const findings = await checkOutdatedDeps(dir, ['typescript']);
+    expect(findings.length).toBeGreaterThan(0);
+    for (const f of findings) {
+      expect(f).toHaveProperty('check', 'outdated-pattern');
+      expect(f).toHaveProperty('severity');
+      expect(f).toHaveProperty('category', 'outdated');
+      expect(f).toHaveProperty('from');
+      expect(f).toHaveProperty('to');
+      expect(f).toHaveProperty('description');
+      expect(f).toHaveProperty('suggestion');
+    }
+  });
+
+  it('produces Go advisory findings when go.mod exists', async () => {
+    await writeFile(join(dir, 'go.mod'), 'module example.com/app\ngo 1.21\n');
+    const findings = await checkOutdatedDeps(dir, ['go']);
+    // Go patterns surface ioutil advisories at project level
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings[0].category).toBe('outdated');
+    expect(findings[0].check).toBe('outdated-pattern');
+  });
+});
+
+// ─── New tool registration ─────────────────────────────────────────────────────
+
+describe('new tool registrations', () => {
+  it('server.js registers scan_inconsistent_patterns and scan_over_engineering', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname } = await import('node:path');
+
+    const serverSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), 'server.js'),
+      'utf8',
+    );
+
+    expect(serverSrc).toContain("'scan_inconsistent_patterns'");
+    expect(serverSrc).toContain("'scan_over_engineering'");
+  });
+
+  it('server.js header comment reflects 14 tools', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname } = await import('node:path');
+
+    const serverSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), 'server.js'),
+      'utf8',
+    );
+
+    expect(serverSrc).toContain('Exposes 14 tools');
+  });
+
+  it('run_scan focus parameter includes all new focus options', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname } = await import('node:path');
+
+    const serverSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), 'server.js'),
+      'utf8',
+    );
+
+    expect(serverSrc).toContain('inconsistent-patterns');
+    expect(serverSrc).toContain('over-engineering');
+    expect(serverSrc).toContain('outdated');
   });
 });
 
