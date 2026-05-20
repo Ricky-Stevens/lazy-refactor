@@ -746,6 +746,7 @@ export async function scanInconsistentPatterns(path, options = {}) {
         check: 'inconsistent-patterns',
         concern,
         approaches: usedApproaches,
+        description: `Inconsistent ${concern} patterns: ${usedApproaches.length} different approaches found`,
       });
     }
   }
@@ -839,6 +840,7 @@ export async function scanOverEngineering(path, options = {}) {
           file,
           symbol: basename(file),
           issue: `Low fan-in (${fi} importers) with ${passThroughs.length}/${totalFunctions} pass-through functions — may be unnecessary abstraction layer`,
+          description: `Low fan-in (${fi} importers) with ${passThroughs.length}/${totalFunctions} pass-through functions — may be unnecessary abstraction layer`,
         });
       }
     }
@@ -877,6 +879,7 @@ export async function scanOverEngineering(path, options = {}) {
             file,
             symbol: className,
             issue: `Single-method class (only method: ${methods[0]}) — a plain function may suffice`,
+            description: `Single-method class (only method: ${methods[0]}) — a plain function may suffice`,
           });
         }
       }
@@ -908,6 +911,7 @@ export async function scanOverEngineering(path, options = {}) {
               file,
               symbol: ifaceName,
               issue: `Interface ${ifaceName} has only one implementation — may be unnecessary abstraction`,
+              description: `Interface ${ifaceName} has only one implementation — may be unnecessary abstraction`,
             });
           }
         }
