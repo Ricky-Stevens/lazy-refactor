@@ -46,7 +46,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
             from: entry.from,
             to: entry.to,
             suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
+            fixable: true,
             confidence: 0.9,
           });
         }
@@ -87,7 +87,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
           from: entry.from,
           to: entry.to,
           suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
+          fixable: true,
           confidence: 0.7,
         });
       }
@@ -116,7 +116,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
           from: entry.from,
           to: entry.to,
           suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
+          fixable: true,
           confidence: 0.7,
         });
       }
@@ -164,7 +164,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
             from: entry.from,
             to: entry.to,
             suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
+            fixable: true,
             confidence: 0.8,
           });
         }
@@ -220,7 +220,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
             from: entry.from,
             to: entry.to,
             suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
+            fixable: true,
             confidence: 0.75,
           });
         }
@@ -256,7 +256,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
             from: entry.from,
             to: entry.to,
             suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
+            fixable: true,
             confidence: 0.9,
           });
         }
@@ -289,7 +289,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
           from: entry.from,
           to: entry.to,
           suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
+          fixable: true,
           confidence: 0.7,
         });
       }

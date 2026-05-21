@@ -35,7 +35,7 @@ const rules = [
     ],
     suggestion:
       "Extract large numeric literals into named constants (e.g. const MAX_BUFFER_SIZE = 4096) to improve readability and maintainability.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "ai-step-comment",
@@ -50,7 +50,7 @@ const rules = [
     exclude: ["**/node_modules/**", "**/vendor/**"],
     suggestion:
       "Replace procedural step comments with explanatory comments that describe WHY, not WHAT. Consider restructuring with well-named functions instead.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "hardcoded-url",
@@ -81,7 +81,7 @@ const rules = [
     ],
     suggestion:
       "Move hardcoded URLs to environment variables or configuration files so they can be changed per environment without code changes.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "hardcoded-filepath",
@@ -96,7 +96,7 @@ const rules = [
     exclude: ["**/node_modules/**", "**/vendor/**"],
     suggestion:
       "Replace hardcoded paths with environment variables, configuration values, or path-building utilities so the code works across environments.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "hardcoded-secret",

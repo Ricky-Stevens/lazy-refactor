@@ -25,7 +25,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Handle exceptions meaningfully: log with ILogger and re-throw, or wrap with a domain-specific exception. An empty catch hides failures.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "sync-over-async-cs",
@@ -40,7 +40,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Use await instead of .Result or .GetAwaiter().GetResult(). If you must block, use .ConfigureAwait(false) to avoid deadlocks.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "console-writeline-debug-cs",
@@ -61,7 +61,7 @@ const rules = [
     ],
     suggestion:
       "Replace Console.WriteLine with ILogger calls (LogInformation, LogDebug, LogError). Console output bypasses log level filtering and structured logging.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "debug-writeline-cs",
@@ -75,7 +75,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Replace Debug.WriteLine with ILogger. Debug.* calls are stripped in Release builds — use ILogger for consistent structured logging.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "debugger-break-cs",
@@ -103,7 +103,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Replace WebClient with HttpClient (injected via IHttpClientFactory). HttpClient supports async/await, connection pooling, and is the modern .NET HTTP API.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "thread-sleep-cs",
@@ -132,7 +132,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Use Task.Run(() => DoWork()) or async/await instead of manual Thread creation. The thread pool is more efficient for most workloads.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "missing-using-disposal-cs",
@@ -148,7 +148,7 @@ const rules = [
     exclude: ["**/*.Tests.*", "**/*Test.cs", "**/*Tests.cs", "**/obj/**", "**/bin/**"],
     suggestion:
       "Wrap IDisposable resources in a `using` statement: `using var stream = new FileStream(...)` or `using (var stream = new FileStream(...)) { ... }`.",
-    fixable: false,
+    fixable: true,
   },
 ];
 

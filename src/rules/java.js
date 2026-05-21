@@ -25,7 +25,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Handle exceptions explicitly: log with a logger and re-throw, or wrap in a domain exception. An empty catch block hides failures silently.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "catch-broad-exception-java",
@@ -40,7 +40,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Catch specific exception types. If a broad catch is needed, re-throw unexpected exceptions: catch (Exception e) { if (e instanceof RuntimeException) throw e; ... }",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "raw-type-java",
@@ -55,7 +55,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Use generic types: List<String> instead of List, Map<String, Integer> instead of Map.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "printstacktrace-java",
@@ -69,7 +69,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       'Replace e.printStackTrace() with `logger.error("Operation failed", e)`. Structured loggers preserve stack traces while supporting log levels and appenders.',
-    fixable: false,
+    fixable: true,
   },
   {
     id: "system-out-debug-java",
@@ -83,7 +83,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Replace System.out.println with a logger (SLF4J, Log4j2, java.util.logging). Logging frameworks support levels, appenders, and structured output.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "vector-deprecated-java",
@@ -157,7 +157,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Migrate to java.time: Date→Instant/LocalDateTime, Calendar→LocalDate/LocalDateTime, SimpleDateFormat→DateTimeFormatter. The java.time API is immutable and thread-safe.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "missing-try-with-resources-java",
@@ -173,7 +173,7 @@ const rules = [
     exclude: ["**/*Test.java", "**/*Tests.java", "**/test/**", "**/target/**"],
     suggestion:
       "Use try-with-resources: `try (BufferedReader reader = new BufferedReader(...)) { ... }`. This guarantees the resource is closed even if an exception is thrown.",
-    fixable: false,
+    fixable: true,
   },
 ];
 

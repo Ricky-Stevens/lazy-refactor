@@ -25,7 +25,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**"],
     suggestion:
       "Handle errors meaningfully: re-throw, wrap with context, or delegate to an error-handling utility. A logging-only catch is acceptable only when accompanied by a re-throw or explicit suppression comment.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "catch-only-logs-ts",
@@ -39,7 +39,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**"],
     suggestion:
       "Logging alone is not handling an error. Re-throw, wrap with context, or perform recovery; if suppression is intentional, add a comment explaining why.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "console-log-debug-ts",
@@ -123,7 +123,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**"],
     suggestion:
       "Define the async function inside useEffect and call it: useEffect(() => { async function fetchData() { ... } fetchData(); return () => { /* cleanup */ }; }, [deps]);",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "promise-no-catch-ts",
@@ -138,7 +138,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**"],
     suggestion:
       "Add a .catch() handler to the promise chain, or convert to async/await inside a try/catch block.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "any-type-ts",
@@ -152,7 +152,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/*.d.ts", "**/node_modules/**"],
     suggestion:
       "Replace `any` with a specific type, `unknown` (then narrow with type guards), or a generic parameter. If suppression is necessary, add a comment explaining why.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "ts-ignore-comment-ts",
@@ -167,7 +167,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/*.d.ts", "**/node_modules/**"],
     suggestion:
       "Resolve the underlying type error instead of suppressing it. If suppression is unavoidable, add an explanatory comment on the same line.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "non-null-assertion-ts",
@@ -181,7 +181,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/*.d.ts", "**/node_modules/**"],
     suggestion:
       "Use optional chaining (?.) or narrow the type with a type guard instead of asserting non-null with !.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "dangerously-set-inner-html-ts",
@@ -196,7 +196,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**"],
     suggestion:
       "Sanitize HTML content before rendering. Use a library like DOMPurify: dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "full-moment-import-ts",
@@ -242,7 +242,7 @@ const rules = [
     exclude: ["**/*.test.*", "**/*.spec.*", "**/node_modules/**", "**/*.d.ts"],
     suggestion:
       'Use parameterized queries (e.g., db.query("SELECT * FROM users WHERE id = $1", [id])) to prevent SQL injection.',
-    fixable: false,
+    fixable: true,
   },
   {
     id: "eval-usage-ts",
@@ -264,7 +264,7 @@ const rules = [
     ],
     suggestion:
       "Replace eval() with JSON.parse() for data, or a proper parser/interpreter for expressions. new Function() has the same risks as eval().",
-    fixable: false,
+    fixable: true,
   },
 ];
 

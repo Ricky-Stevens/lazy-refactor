@@ -1,6 +1,6 @@
 {
   "name": "lazy-refactor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Claude Code plugin for deterministic code quality scanning with AI-powered fixes across TypeScript, Go, Python, C#, and Java.",
   "mcpServers": {
     "lazy-refactor": {

@@ -26,7 +26,7 @@ const rules = [
     exclude: ["**/*_test.py", "**/test_*.py", "**/tests/**"],
     suggestion:
       "Catch specific exceptions: except ValueError: or at minimum except Exception:. Never use bare except:.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "print-debug-py",
@@ -50,7 +50,7 @@ const rules = [
     ],
     suggestion:
       "Replace print() with structured logging using the `logging` module. Use `logging.debug()` for debug output that can be filtered by log level.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "pdb-debug-py",
@@ -124,7 +124,7 @@ const rules = [
     exclude: ["**/*_test.py", "**/test_*.py", "**/tests/**"],
     suggestion:
       "Use pathlib.Path: os.path.join(a,b)→Path(a)/b, os.path.exists(p)→Path(p).exists(), os.path.dirname(p)→Path(p).parent, os.path.basename(p)→Path(p).name.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "mutable-default-arg-py",
@@ -138,7 +138,7 @@ const rules = [
     exclude: ["**/*_test.py", "**/test_*.py", "**/tests/**"],
     suggestion:
       "Use None as default and create the mutable object inside the function: def foo(items=None): items = items or []",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "wildcard-import-py",
@@ -152,7 +152,7 @@ const rules = [
     exclude: ["**/*_test.py", "**/test_*.py", "**/tests/**", "**/__init__.py"],
     suggestion:
       "Import specific names: from module import func1, func2. Use __all__ in the source module to control what * exports.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "global-keyword-py",
@@ -167,7 +167,7 @@ const rules = [
     exclude: ["**/*_test.py", "**/test_*.py", "**/tests/**"],
     suggestion:
       "Pass state as function parameters or use a class to encapsulate shared state instead of global variables.",
-    fixable: false,
+    fixable: true,
   },
 ];
 

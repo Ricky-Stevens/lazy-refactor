@@ -27,7 +27,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion:
       "Handle all error return values. If an error is genuinely safe to ignore (e.g. close on a read-only resource), add a comment explaining why.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "fmt-println-debug-go",
@@ -41,7 +41,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**", "**/cmd/**", "**/main.go"],
     suggestion:
       "Replace fmt.Print* with a structured logger (slog, zap, logrus). fmt.Print* in non-main packages is almost always a debugging leftover.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "spew-dump-debug-go",
@@ -70,7 +70,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion:
       'Return the error (or a wrapped version) instead of nil: `return fmt.Errorf("operation failed: %w", err)`. Returning nil when an error exists hides failures from callers.',
-    fixable: false,
+    fixable: true,
   },
   {
     id: "ioutil-deprecated-go",
@@ -98,7 +98,7 @@ const rules = [
     filePattern: "**/*.go",
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion: 'Wrap the error with context: return fmt.Errorf("operation failed: %w", err)',
-    fixable: false,
+    fixable: true,
   },
   {
     id: "log-println-debug-go",
@@ -111,7 +111,7 @@ const rules = [
     filePattern: "**/*.go",
     exclude: ["**/*_test.go", "**/vendor/**", "**/cmd/**"],
     suggestion: "Use structured logging instead of log.Print",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "open-without-defer-close-go",
@@ -126,7 +126,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion:
       "Always defer Close immediately after a successful open: `f, err := os.Open(...); if err != nil { ... }; defer f.Close()`.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "goroutine-no-context-go",
@@ -140,7 +140,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion:
       "Pass a context.Context to the goroutine and select on ctx.Done() to support cancellation.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "panic-in-handler-go",
@@ -154,7 +154,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**", "**/main.go"],
     suggestion:
       "Return an error instead of panicking. Use panic only for truly unrecoverable situations, and always have a recover() in place.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "log-fatal-go",
@@ -168,7 +168,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**", "**/main.go", "**/cmd/**"],
     suggestion:
       "Return an error to the caller instead of calling log.Fatal. log.Fatal calls os.Exit(1) which skips deferred functions.",
-    fixable: false,
+    fixable: true,
   },
   {
     id: "sql-string-concat-go",
@@ -183,7 +183,7 @@ const rules = [
     exclude: ["**/*_test.go", "**/vendor/**"],
     suggestion:
       'Use parameterized queries: db.Query("SELECT * FROM users WHERE id = $1", id) instead of string concatenation.',
-    fixable: false,
+    fixable: true,
   },
 ];
 

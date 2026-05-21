@@ -160,7 +160,7 @@ export function mapDupe(f) {
     startLineB: f.startLineB,
     endLineB: f.endLineB,
     suggestion: "Extract shared logic into a reusable function or module.",
-    fixable: false,
+    fixable: true,
     confidence: f.similarity,
     language: f.language ?? "common",
   };
@@ -175,7 +175,7 @@ export function mapDeadExport(f, resolvedPath) {
     description: `Exported symbol '${f.symbol}' appears unused`,
     symbol: f.symbol,
     suggestion: "Remove the export or verify it is consumed externally.",
-    fixable: false,
+    fixable: true,
     confidence: f.confidence,
     language: f.language ?? "common",
   };
@@ -190,7 +190,7 @@ export function mapUnusedDep(f) {
     description: `Dependency '${f.dep}' declared in ${f.manifest} manifest but not referenced in source`,
     dep: f.dep,
     suggestion: "Remove the dependency or verify it is used via dynamic require.",
-    fixable: false,
+    fixable: true,
     confidence: 0.7,
     language: f.language ?? "common",
   };
@@ -250,7 +250,7 @@ export function mapInconsistent(f, resolvedPath) {
     description: f.description,
     suggestion:
       f.suggestion ?? "Align with the predominant pattern used elsewhere in the codebase.",
-    fixable: f.fixable ?? false,
+    fixable: f.fixable ?? true,
     confidence: f.confidence ?? 0.75,
     language: f.language ?? "common",
   };
@@ -266,7 +266,7 @@ export function mapOverEngineering(f, resolvedPath) {
       (f.file ? [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line ?? 1 }] : []),
     description: f.description,
     suggestion: f.suggestion ?? "Simplify to the minimum viable abstraction.",
-    fixable: f.fixable ?? false,
+    fixable: f.fixable ?? true,
     confidence: f.confidence ?? 0.7,
     language: f.language ?? "common",
   };

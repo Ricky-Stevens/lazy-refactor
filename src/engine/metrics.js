@@ -87,7 +87,7 @@ export async function computeMetrics(path, options = {}) {
         category: "metrics",
         description: `File exceeds ${maxFileLines} line threshold (${metrics.lineCount} lines)`,
         suggestion: "Split the file into smaller, focused modules.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -101,7 +101,7 @@ export async function computeMetrics(path, options = {}) {
         category: "metrics",
         description: `File complexity score ${metrics.complexityScore.toFixed(2)} exceeds threshold ${maxComplexity}`,
         suggestion: "Reduce nesting, extract functions, and simplify branching logic.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -115,7 +115,7 @@ export async function computeMetrics(path, options = {}) {
         category: "metrics",
         description: `File max nesting depth ${metrics.maxNestingDepth} exceeds threshold ${maxNesting}`,
         suggestion: "Extract nested logic into named functions or guard clauses.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -131,7 +131,7 @@ export async function computeMetrics(path, options = {}) {
         confidence: 0.85,
         description: `File has ${metrics.exportCount} exports, exceeding threshold of ${maxExportsPerFile}`,
         suggestion: "Split exports into smaller, more focused modules.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -147,7 +147,7 @@ export async function computeMetrics(path, options = {}) {
         confidence: 0.85,
         description: `File has ${metrics.importCount} imports, exceeding threshold of ${maxImportsPerFile}`,
         suggestion: "Consider reducing dependencies or splitting the file.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -163,7 +163,7 @@ export async function computeMetrics(path, options = {}) {
         confidence: 0.7,
         description: `Complex file (complexity ${metrics.complexityScore.toFixed(2)}) has very low comment ratio (${metrics.commentToCodeRatio})`,
         suggestion: "Add explanatory comments to complex logic.",
-        fixable: false,
+        fixable: true,
       });
     }
 
@@ -179,7 +179,7 @@ export async function computeMetrics(path, options = {}) {
         confidence: 0.7,
         description: `File has excessive comment ratio (${metrics.commentToCodeRatio}) — more comments than code`,
         suggestion: "Review and prune redundant or narration-style comments.",
-        fixable: false,
+        fixable: true,
       });
     }
   }
