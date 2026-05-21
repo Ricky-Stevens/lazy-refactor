@@ -6,8 +6,6 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
-[![MCP](https://img.shields.io/badge/protocol-MCP-purple)](https://modelcontextprotocol.io)
-[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Go%20%7C%20Python%20%7C%20C%23%20%7C%20Java-orange)](#supported-languages)
 
 A Claude Code plugin for deterministic code quality scanning with AI-powered fixes. Point it at a codebase — it finds the problems, scores them, and an AI agent fixes the easy ones while you focus on the hard ones.
 
