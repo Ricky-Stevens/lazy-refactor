@@ -2,14 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  extractExports,
-  extractImports,
-  scanDeadCode,
-  scanInconsistentPatterns,
-  scanOverEngineering,
-  scanUnusedImports,
-} from "./cross-ref.js";
+import { extractExports, extractImports, scanDeadCode, scanUnusedImports } from "./cross-ref.js";
+import { scanInconsistentPatterns, scanOverEngineering } from "./patterns.js";
 
 // ---------------------------------------------------------------------------
 // extractExports
@@ -707,7 +701,7 @@ describe("scanOverEngineering", () => {
 
     const findings = await scanOverEngineering(subDir, {});
     const classFindings = findings.filter(
-      (f) => f.issue.includes("Single-method class") && f.symbol === "StringWrapper",
+      (f) => f.description.includes("Single-method class") && f.symbol === "StringWrapper",
     );
     expect(classFindings.length).toBeGreaterThanOrEqual(1);
     expect(classFindings[0].check).toBe("over-engineering");
@@ -728,7 +722,7 @@ describe("scanOverEngineering", () => {
 
     const findings = await scanOverEngineering(subDir, {});
     const ifaceFindings = findings.filter(
-      (f) => f.issue.includes("one implementation") && f.symbol === "Serializer",
+      (f) => f.description.includes("one implementation") && f.symbol === "Serializer",
     );
     expect(ifaceFindings.length).toBeGreaterThanOrEqual(1);
     expect(ifaceFindings[0].check).toBe("over-engineering");
@@ -892,7 +886,7 @@ describe("scanOverEngineering — C# colon-based interface implementation", () =
 
     const findings = await scanOverEngineering(subDir, {});
     const ifaceFindings = findings.filter(
-      (f) => f.symbol === "IService" && f.issue.includes("one implementation"),
+      (f) => f.symbol === "IService" && f.description.includes("one implementation"),
     );
     // Should detect single implementation via colon syntax
     expect(ifaceFindings.length).toBeGreaterThanOrEqual(1);

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { globToRegex } from "./files.js";
 
 /** @type {boolean|null} */
 let _ripgrepAvailable = null;
@@ -16,48 +17,6 @@ export async function isRipgrepAvailable() {
     _ripgrepAvailable = false;
   }
   return _ripgrepAvailable;
-}
-
-/**
- * Convert a simple glob pattern to a RegExp for file path matching.
- * Supports **, *, ?, and {a,b} alternation.
- * @param {string} glob
- * @returns {RegExp}
- */
-function globToRegex(glob) {
-  const expanded = glob.replace(/\{([^}]+)\}/g, (_, inner) => {
-    const alts = inner.split(",").map((s) => s.trim());
-    return `(${alts.map(escapeForGlob).join("|")})`;
-  });
-
-  let regStr = "";
-  let i = 0;
-  while (i < expanded.length) {
-    if (expanded[i] === "(" || expanded[i] === ")" || expanded[i] === "|") {
-      regStr += expanded[i];
-      i++;
-    } else if (expanded.startsWith("**/", i)) {
-      regStr += "(.+/)?";
-      i += 3;
-    } else if (expanded.startsWith("**", i)) {
-      regStr += ".*";
-      i += 2;
-    } else if (expanded[i] === "*") {
-      regStr += "[^/]*";
-      i++;
-    } else if (expanded[i] === "?") {
-      regStr += "[^/]";
-      i++;
-    } else {
-      regStr += escapeForGlob(expanded[i]);
-      i++;
-    }
-  }
-  return new RegExp(`^${regStr}$`);
-}
-
-function escapeForGlob(ch) {
-  return ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

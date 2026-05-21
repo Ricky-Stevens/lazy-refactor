@@ -36,20 +36,3 @@ export function scoreFinding(finding) {
 export function scoreFindings(findings) {
   return findings.map(scoreFinding).sort((a, b) => b.score - a.score);
 }
-
-/**
- * Group findings by severity into { critical, high, medium, low }.
- *
- * @param {object[]} findings
- * @returns {{ critical: object[], high: object[], medium: object[], low: object[] }}
- */
-export function groupBySeverity(findings) {
-  const groups = { critical: [], high: [], medium: [], low: [] };
-  for (const finding of findings) {
-    const key = finding.severity;
-    if (key in groups) {
-      groups[key].push(finding);
-    }
-  }
-  return groups;
-}

@@ -360,7 +360,6 @@ describe("computeMetrics — directory scan", () => {
     await writeFile(join(specificTmpDir, "complex-no-comments.js"), content);
 
     const result = await computeMetrics(specificTmpDir, {
-      maxComplexity: 999, // don't want other findings clouding the test
       maxNesting: 999,
       languages: ["javascript"],
     });
@@ -375,7 +374,7 @@ describe("computeMetrics — directory scan", () => {
 
   test("does not emit metrics-low-comments for simple file with no comments", async () => {
     const specificTmpDir = await mkdtemp(join(tmpdir(), "metrics-simple-nocomments-"));
-    // Low complexity — commentToCodeRatio < 0.02 but complexityScore <= 15
+    // Low complexity — commentToCodeRatio < 0.02 but complexityScore <= maxComplexity
     const content = "const x = 1;\nconst y = 2;\n";
     await writeFile(join(specificTmpDir, "simple.js"), content);
 

@@ -525,10 +525,11 @@ export async function scanDuplicates(path, options = {}) {
 
   const findings = [];
   const emitted = new Set();
+  const tokenDataByFile = new Map(fileTokenData.map((d) => [d.file, d]));
 
   for (const { fileA, fileB, startA, startB } of candidates) {
-    const dataA = fileTokenData.find((d) => d.file === fileA);
-    const dataB = fileTokenData.find((d) => d.file === fileB);
+    const dataA = tokenDataByFile.get(fileA);
+    const dataB = tokenDataByFile.get(fileB);
     if (!dataA || !dataB) continue;
 
     const sim = verifyMatch(dataA.normalised, dataB.normalised, startA, startB, minTokens);

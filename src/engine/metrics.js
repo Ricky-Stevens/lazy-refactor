@@ -225,7 +225,8 @@ export function computeFileMetrics(content, filePath) {
  *   maxNesting?: number,
  *   maxExportsPerFile?: number,
  *   maxImportsPerFile?: number,
- *   languages?: string[]
+ *   languages?: string[],
+ *   exclude?: string[]
  * }} [options]
  * @returns {Promise<{
  *   fileMetrics: Array<{
@@ -361,7 +362,7 @@ export async function computeMetrics(path, options = {}) {
       });
     }
 
-    if (metrics.commentToCodeRatio < 0.02 && metrics.complexityScore > 15) {
+    if (metrics.commentToCodeRatio < 0.02 && metrics.complexityScore > maxComplexity) {
       findings.push({
         ruleId: "metrics-low-comments",
         file: relativePath,

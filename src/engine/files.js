@@ -26,15 +26,17 @@ export const SKIP_DIRS = new Set([
   "bin",
   "target",
   ".gradle",
+  "venv",
+  ".venv",
 ]);
 
 /**
- * Convert a glob pattern to a RegExp for exclude matching.
+ * Convert a glob pattern to a RegExp for path matching.
  * Supports `*`, `**`, `?`, and `{a,b,c}` brace alternation.
  * @param {string} pattern
  * @returns {RegExp}
  */
-function globToExcludeRegex(pattern) {
+export function globToRegex(pattern) {
   // First expand brace alternation `{a,b}` into a regex group `(a|b)` with
   // the contents already escaped.
   const expanded = pattern.replace(/\{([^}]+)\}/g, (_, inner) => {
@@ -104,7 +106,7 @@ export async function collectFiles(dir, options = {}) {
       const rel = full.slice(dir.length + 1);
 
       const excluded = exclude.some((pattern) => {
-        const rx = globToExcludeRegex(pattern);
+        const rx = globToRegex(pattern);
         return rx.test(rel) || rx.test(entry.name);
       });
       if (excluded) continue;

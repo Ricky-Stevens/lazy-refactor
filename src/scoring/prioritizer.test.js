@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { groupBySeverity, scoreFinding, scoreFindings } from "./prioritizer.js";
+import { scoreFinding, scoreFindings } from "./prioritizer.js";
 
 // Helper to build a minimal finding
 function finding(overrides = {}) {
@@ -110,42 +110,5 @@ describe("scoreFindings", () => {
 
   it("handles an empty array", () => {
     expect(scoreFindings([])).toEqual([]);
-  });
-});
-
-describe("groupBySeverity", () => {
-  it("groups findings into the correct buckets", () => {
-    const findings = [
-      finding({ id: "1", severity: "critical" }),
-      finding({ id: "2", severity: "high" }),
-      finding({ id: "3", severity: "high" }),
-      finding({ id: "4", severity: "medium" }),
-      finding({ id: "5", severity: "low" }),
-      finding({ id: "6", severity: "low" }),
-    ];
-    const groups = groupBySeverity(findings);
-    expect(groups.critical).toHaveLength(1);
-    expect(groups.high).toHaveLength(2);
-    expect(groups.medium).toHaveLength(1);
-    expect(groups.low).toHaveLength(2);
-  });
-
-  it("returns empty arrays for absent severities", () => {
-    const groups = groupBySeverity([finding({ severity: "critical" })]);
-    expect(groups.high).toEqual([]);
-    expect(groups.medium).toEqual([]);
-    expect(groups.low).toEqual([]);
-  });
-
-  it("always returns all four keys", () => {
-    const groups = groupBySeverity([]);
-    expect(Object.keys(groups).sort()).toEqual(["critical", "high", "low", "medium"]);
-  });
-
-  it("ignores unknown severities", () => {
-    const groups = groupBySeverity([finding({ severity: "unknown" })]);
-    const total =
-      groups.critical.length + groups.high.length + groups.medium.length + groups.low.length;
-    expect(total).toBe(0);
   });
 });

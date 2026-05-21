@@ -8,29 +8,24 @@
  *   Config: get_config, update_config
  */
 
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod";
-import {
-  scanDeadCode,
-  scanInconsistentPatterns,
-  scanOverEngineering,
-  scanUnusedDeps,
-  scanUnusedImports,
-} from "../engine/cross-ref.js";
+import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from "../engine/cross-ref.js";
+import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
-import { collectFiles } from "../engine/files.js";
 import { computeMetrics } from "../engine/metrics.js";
+import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
+import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
 // Language-specific rule sets
 import commonRules from "../rules/common.js";
 import csharpRules from "../rules/csharp.js";
 import goRules from "../rules/go.js";
 import javaRules from "../rules/java.js";
-import outdatedPatterns from "../rules/outdated-patterns.js";
 import pythonRules from "../rules/python.js";
 import typescriptRules from "../rules/typescript.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
@@ -42,9 +37,6 @@ import {
   getSummary,
   updateFinding,
 } from "../state/findings.js";
-
-// outdated-patterns exports a Record<language, Array<{from,to,...}>> — different shape from scan rules.
-// It is NOT included in buildRules(); instead it is used by checkOutdatedDeps() for migration detection.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -143,181 +135,6 @@ async function writeConfig(projectPath, config) {
 }
 
 /**
- * Detect languages in use at a project path by inspecting marker files.
- * @param {string} projectPath
- * @returns {Promise<{languages: string[], markers: object}>}
- */
-export async function detectLanguages(projectPath) {
-  const markers = {};
-  const languages = [];
-
-  // Helper: try to read a file, return content or null
-  async function tryRead(file) {
-    try {
-      return await readFile(join(projectPath, file), "utf8");
-    } catch {
-      return null;
-    }
-  }
-
-  // Helper: look for files matching a suffix in the project root
-  async function findBySuffix(suffix) {
-    try {
-      const entries = await readdir(projectPath);
-      return entries.filter((e) => e.endsWith(suffix));
-    } catch {
-      return [];
-    }
-  }
-
-  // TypeScript / JavaScript: package.json with typescript dep, or tsconfig
-  const pkgJson = await tryRead("package.json");
-  if (pkgJson !== null) {
-    markers["package.json"] = true;
-    try {
-      const pkg = JSON.parse(pkgJson);
-      const allDeps = {
-        ...pkg.dependencies,
-        ...pkg.devDependencies,
-        ...pkg.peerDependencies,
-      };
-      if (allDeps.typescript || allDeps["ts-node"] || allDeps.tsx) {
-        languages.push("typescript");
-        markers.typescript = true;
-      } else {
-        // Plain JavaScript project
-        languages.push("typescript"); // treat JS projects with package.json the same
-        markers.javascript = true;
-      }
-    } catch {
-      languages.push("typescript");
-    }
-  }
-
-  const tsConfig = await tryRead("tsconfig.json");
-  if (tsConfig !== null && !languages.includes("typescript")) {
-    languages.push("typescript");
-    markers["tsconfig.json"] = true;
-  }
-
-  // Go: go.mod
-  const goMod = await tryRead("go.mod");
-  if (goMod !== null) {
-    languages.push("go");
-    markers["go.mod"] = true;
-  }
-
-  // Python: requirements.txt or pyproject.toml
-  const requirements = await tryRead("requirements.txt");
-  if (requirements !== null) {
-    if (!languages.includes("python")) languages.push("python");
-    markers["requirements.txt"] = true;
-  }
-  const pyproject = await tryRead("pyproject.toml");
-  if (pyproject !== null) {
-    if (!languages.includes("python")) languages.push("python");
-    markers["pyproject.toml"] = true;
-  }
-  const setupPy = await tryRead("setup.py");
-  if (setupPy !== null) {
-    if (!languages.includes("python")) languages.push("python");
-    markers["setup.py"] = true;
-  }
-
-  // C#: *.csproj or *.sln
-  const csprojFiles = await findBySuffix(".csproj");
-  const slnFiles = await findBySuffix(".sln");
-  if (csprojFiles.length > 0 || slnFiles.length > 0) {
-    languages.push("csharp");
-    if (csprojFiles.length > 0) markers[csprojFiles[0]] = true;
-    if (slnFiles.length > 0) markers[slnFiles[0]] = true;
-  }
-
-  // Java: pom.xml or build.gradle
-  const pomXml = await tryRead("pom.xml");
-  if (pomXml !== null) {
-    languages.push("java");
-    markers["pom.xml"] = true;
-  }
-  const buildGradle = await tryRead("build.gradle");
-  if (buildGradle !== null) {
-    if (!languages.includes("java")) languages.push("java");
-    markers["build.gradle"] = true;
-  }
-
-  // Check immediate subdirectories (one level deep) for marker files
-  try {
-    const entries = await readdir(projectPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") {
-        continue;
-      }
-      const subdir = join(projectPath, entry.name);
-
-      // TypeScript / JavaScript: package.json in subdir
-      const subPkg = await tryRead(join(entry.name, "package.json"));
-      if (subPkg !== null && !languages.includes("typescript")) {
-        languages.push("typescript");
-        markers[`${entry.name}/package.json`] = true;
-      }
-
-      // Go: go.mod in subdir
-      const subGoMod = await tryRead(join(entry.name, "go.mod"));
-      if (subGoMod !== null && !languages.includes("go")) {
-        languages.push("go");
-        markers[`${entry.name}/go.mod`] = true;
-      }
-
-      // Python: requirements.txt in subdir
-      const subReq = await tryRead(join(entry.name, "requirements.txt"));
-      if (subReq !== null && !languages.includes("python")) {
-        languages.push("python");
-        markers[`${entry.name}/requirements.txt`] = true;
-      }
-
-      // Python: pyproject.toml in subdir
-      const subPyproject = await tryRead(join(entry.name, "pyproject.toml"));
-      if (subPyproject !== null && !languages.includes("python")) {
-        languages.push("python");
-        markers[`${entry.name}/pyproject.toml`] = true;
-      }
-
-      // Java: pom.xml in subdir
-      const subPom = await tryRead(join(entry.name, "pom.xml"));
-      if (subPom !== null && !languages.includes("java")) {
-        languages.push("java");
-        markers[`${entry.name}/pom.xml`] = true;
-      }
-
-      // Java: build.gradle in subdir
-      const subGradle = await tryRead(join(entry.name, "build.gradle"));
-      if (subGradle !== null && !languages.includes("java")) {
-        languages.push("java");
-        markers[`${entry.name}/build.gradle`] = true;
-      }
-
-      // C#: *.csproj in subdir
-      try {
-        const subEntries = await readdir(subdir);
-        const subCsproj = subEntries.filter((e) => e.endsWith(".csproj"));
-        const subSln = subEntries.filter((e) => e.endsWith(".sln"));
-        if ((subCsproj.length > 0 || subSln.length > 0) && !languages.includes("csharp")) {
-          languages.push("csharp");
-          if (subCsproj.length > 0) markers[`${entry.name}/${subCsproj[0]}`] = true;
-          if (subSln.length > 0) markers[`${entry.name}/${subSln[0]}`] = true;
-        }
-      } catch {
-        // skip unreadable subdirs
-      }
-    }
-  } catch {
-    // skip if root readdir fails (already handled above for root-level detection)
-  }
-
-  return { languages, markers };
-}
-
-/**
  * Build the combined rule set for the detected languages.
  * Always includes common rules.
  * @param {string[]} languages
@@ -332,410 +149,6 @@ function buildRules(languages) {
     }
   }
   return rules;
-}
-
-/**
- * Read the project's package manifest(s) and check for outdated dependencies.
- * Supports package.json (JS/TS), go.mod (Go), and requirements.txt (Python).
- * @param {string} projectPath  Directory containing the manifest
- * @param {string[]} languages  Detected language list
- * @returns {Promise<Array>}    Findings with check: 'outdated-pattern'
- */
-export async function checkOutdatedDeps(projectPath, languages) {
-  const findings = [];
-
-  // Helper: try to read a file, return content or null
-  async function tryRead(file) {
-    try {
-      return await readFile(join(projectPath, file), "utf8");
-    } catch {
-      return null;
-    }
-  }
-
-  // JS/TS: scan package.json dependency names AND source files for syntactic patterns
-  if (languages.includes("typescript") || languages.includes("javascript")) {
-    const entries = outdatedPatterns.javascript ?? [];
-    const pkgJson = await tryRead("package.json");
-
-    // Check package.json deps by name
-    if (pkgJson !== null) {
-      let pkg;
-      try {
-        pkg = JSON.parse(pkgJson);
-      } catch {
-        pkg = {};
-      }
-      const allDeps = {
-        ...pkg.dependencies,
-        ...pkg.devDependencies,
-        ...pkg.peerDependencies,
-      };
-      for (const entry of entries) {
-        // Match by package name (the 'from' field may include extra description text)
-        const depName = entry.from.split(" ")[0];
-        if (allDeps[depName] !== undefined) {
-          findings.push({
-            check: "outdated-pattern",
-            severity: entry.severity,
-            category: "outdated",
-            locations: [{ file: "package.json", startLine: 1 }],
-            description: `Outdated dependency '${entry.from}': ${entry.description}`,
-            from: entry.from,
-            to: entry.to,
-            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
-            confidence: 0.9,
-          });
-        }
-      }
-    }
-
-    // Also scan source files for detectPattern matches (e.g. `var` declarations,
-    // callback-style async) — these aren't tied to a package.json dep.
-    const jsFiles = await collectFiles(projectPath, { languages: ["typescript"] });
-    const jsSources = [];
-    for (const f of jsFiles) {
-      try {
-        jsSources.push(await readFile(f, "utf8"));
-      } catch {
-        /* skip */
-      }
-    }
-    const combinedJsSource = jsSources.join("\n");
-
-    for (const entry of entries) {
-      // Skip entries already reported via package.json
-      if (findings.some((f) => f.from === entry.from)) continue;
-      if (!entry.detectPattern) continue;
-
-      let pattern;
-      try {
-        pattern = new RegExp(entry.detectPattern);
-      } catch {
-        continue;
-      }
-      if (pattern.test(combinedJsSource)) {
-        findings.push({
-          check: "outdated-pattern",
-          severity: entry.severity,
-          category: "outdated",
-          locations: [{ file: "source", startLine: 1 }],
-          description: `Outdated usage '${entry.from}': ${entry.description}`,
-          from: entry.from,
-          to: entry.to,
-          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
-          confidence: 0.7,
-        });
-      }
-    }
-  }
-
-  // Go: scan *.go source files for each entry's detectPattern before emitting
-  if (languages.includes("go")) {
-    const entries = outdatedPatterns.go ?? [];
-    const goMod = await tryRead("go.mod");
-    if (goMod !== null && entries.length > 0) {
-      // Collect all .go file contents recursively
-      async function collectGoSources(dir) {
-        let contents = [];
-        try {
-          const items = await readdir(dir, { withFileTypes: true });
-          for (const item of items) {
-            const full = join(dir, item.name);
-            if (item.isDirectory() && !item.name.startsWith(".") && item.name !== "vendor") {
-              contents = contents.concat(await collectGoSources(full));
-            } else if (item.isFile() && item.name.endsWith(".go")) {
-              try {
-                contents.push(await readFile(full, "utf8"));
-              } catch {
-                // skip unreadable files
-              }
-            }
-          }
-        } catch {
-          // skip unreadable dirs
-        }
-        return contents;
-      }
-
-      const goSources = await collectGoSources(projectPath);
-      const combinedSource = goSources.join("\n");
-
-      for (const entry of entries) {
-        const pattern = new RegExp(entry.detectPattern);
-        if (!pattern.test(combinedSource)) continue;
-
-        findings.push({
-          check: "outdated-pattern",
-          severity: entry.severity,
-          category: "outdated",
-          locations: [{ file: "go.mod", startLine: 1 }],
-          description: `Outdated usage '${entry.from}': ${entry.description}`,
-          from: entry.from,
-          to: entry.to,
-          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
-          confidence: 0.7,
-        });
-      }
-    }
-  }
-
-  // C#: scan *.csproj for PackageReference entries, and grep source for stdlib patterns
-  if (languages.includes("csharp")) {
-    const entries = outdatedPatterns.csharp ?? [];
-    if (entries.length > 0) {
-      // Collect .csproj file contents
-      let csprojContent = "";
-      try {
-        const rootEntries = await readdir(projectPath);
-        const csprojFiles = rootEntries.filter((e) => e.endsWith(".csproj"));
-        for (const f of csprojFiles) {
-          try {
-            csprojContent += await readFile(join(projectPath, f), "utf8");
-          } catch {
-            /* skip */
-          }
-        }
-      } catch {
-        /* skip */
-      }
-
-      // Collect all C# source file contents recursively
-      async function collectCsSources(dir) {
-        let contents = [];
-        try {
-          const items = await readdir(dir, { withFileTypes: true });
-          for (const item of items) {
-            const full = join(dir, item.name);
-            if (
-              item.isDirectory() &&
-              !item.name.startsWith(".") &&
-              item.name !== "bin" &&
-              item.name !== "obj"
-            ) {
-              contents = contents.concat(await collectCsSources(full));
-            } else if (item.isFile() && item.name.endsWith(".cs")) {
-              try {
-                contents.push(await readFile(full, "utf8"));
-              } catch {
-                /* skip */
-              }
-            }
-          }
-        } catch {
-          /* skip */
-        }
-        return contents;
-      }
-      const csSources = await collectCsSources(projectPath);
-      const combinedCsSource = csSources.join("\n");
-
-      for (const entry of entries) {
-        // Check manifest first (PackageReference Include="X")
-        const manifestPattern = new RegExp(
-          `PackageReference\\s+Include\\s*=\\s*["']${entry.from.split(" ")[0]}["']`,
-          "i",
-        );
-        const sourcePattern = new RegExp(entry.detectPattern);
-        if (manifestPattern.test(csprojContent) || sourcePattern.test(combinedCsSource)) {
-          findings.push({
-            check: "outdated-pattern",
-            severity: entry.severity,
-            category: "outdated",
-            locations: [{ file: "project", startLine: 1 }],
-            description: `Outdated usage '${entry.from}': ${entry.description}`,
-            from: entry.from,
-            to: entry.to,
-            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
-            confidence: 0.8,
-          });
-        }
-      }
-    }
-  }
-
-  // Java: scan pom.xml/build.gradle for dependency entries, and grep source for stdlib patterns
-  if (languages.includes("java")) {
-    const entries = outdatedPatterns.java ?? [];
-    if (entries.length > 0) {
-      let manifestContent = "";
-      try {
-        const pom = await readFile(join(projectPath, "pom.xml"), "utf8");
-        manifestContent += pom;
-      } catch {
-        /* no pom.xml */
-      }
-      try {
-        const gradle = await readFile(join(projectPath, "build.gradle"), "utf8");
-        manifestContent += gradle;
-      } catch {
-        /* no build.gradle */
-      }
-
-      // Collect all Java source file contents recursively
-      async function collectJavaSources(dir) {
-        let contents = [];
-        try {
-          const items = await readdir(dir, { withFileTypes: true });
-          for (const item of items) {
-            const full = join(dir, item.name);
-            if (
-              item.isDirectory() &&
-              !item.name.startsWith(".") &&
-              item.name !== "target" &&
-              item.name !== "build"
-            ) {
-              contents = contents.concat(await collectJavaSources(full));
-            } else if (item.isFile() && item.name.endsWith(".java")) {
-              try {
-                contents.push(await readFile(full, "utf8"));
-              } catch {
-                /* skip */
-              }
-            }
-          }
-        } catch {
-          /* skip */
-        }
-        return contents;
-      }
-      const javaSources = await collectJavaSources(projectPath);
-      const combinedJavaSource = javaSources.join("\n");
-
-      for (const entry of entries) {
-        // Check manifest (pom.xml <artifactId>X</artifactId> or build.gradle implementation 'group:artifact')
-        const artifactName = entry.from.split(".").pop().split(" ")[0];
-        const pomPattern = new RegExp(`<artifactId>\\s*${artifactName}\\s*</artifactId>`, "i");
-        const gradlePattern = new RegExp(
-          `implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`,
-          "i",
-        );
-        const sourcePattern = new RegExp(entry.detectPattern);
-
-        if (
-          pomPattern.test(manifestContent) ||
-          gradlePattern.test(manifestContent) ||
-          sourcePattern.test(combinedJavaSource)
-        ) {
-          findings.push({
-            check: "outdated-pattern",
-            severity: entry.severity,
-            category: "outdated",
-            locations: [{ file: "project", startLine: 1 }],
-            description: `Outdated usage '${entry.from}': ${entry.description}`,
-            from: entry.from,
-            to: entry.to,
-            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
-            confidence: 0.75,
-          });
-        }
-      }
-    }
-  }
-
-  // Python: scan requirements.txt for deprecated packages AND .py source files for detectPattern
-  if (languages.includes("python")) {
-    const entries = outdatedPatterns.python ?? [];
-    const requirements = await tryRead("requirements.txt");
-    const reportedFroms = new Set();
-
-    if (requirements !== null) {
-      const lines = requirements.split("\n").map((l) => l.trim());
-      for (const entry of entries) {
-        const depName = entry.from.split(" ")[0].toLowerCase();
-        const matched = lines.some(
-          (line) =>
-            line.toLowerCase().startsWith(`${depName}==`) ||
-            line.toLowerCase().startsWith(`${depName}>=`) ||
-            line.toLowerCase().startsWith(`${depName}>`) ||
-            line.toLowerCase() === depName,
-        );
-        if (matched) {
-          reportedFroms.add(entry.from);
-          findings.push({
-            check: "outdated-pattern",
-            severity: entry.severity,
-            category: "outdated",
-            locations: [{ file: "requirements.txt", startLine: 1 }],
-            description: `Outdated dependency '${entry.from}': ${entry.description}`,
-            from: entry.from,
-            to: entry.to,
-            suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-            fixable: false,
-            confidence: 0.9,
-          });
-        }
-      }
-    }
-
-    // Also scan .py source files for detectPattern matches (stdlib modules like
-    // urllib2, optparse etc. are not pip packages — they appear in source imports).
-    async function collectPySources(dir) {
-      let contents = [];
-      try {
-        const items = await readdir(dir, { withFileTypes: true });
-        for (const item of items) {
-          const full = join(dir, item.name);
-          if (
-            item.isDirectory() &&
-            !item.name.startsWith(".") &&
-            item.name !== "node_modules" &&
-            item.name !== "__pycache__" &&
-            item.name !== "venv" &&
-            item.name !== ".venv" &&
-            item.name !== "dist"
-          ) {
-            contents = contents.concat(await collectPySources(full));
-          } else if (item.isFile() && item.name.endsWith(".py")) {
-            try {
-              contents.push(await readFile(full, "utf8"));
-            } catch {
-              /* skip */
-            }
-          }
-        }
-      } catch {
-        /* skip */
-      }
-      return contents;
-    }
-
-    const pySources = await collectPySources(projectPath);
-    const combinedPySource = pySources.join("\n");
-
-    for (const entry of entries) {
-      if (reportedFroms.has(entry.from)) continue;
-      if (!entry.detectPattern) continue;
-
-      let pattern;
-      try {
-        pattern = new RegExp(entry.detectPattern);
-      } catch {
-        continue;
-      }
-      if (pattern.test(combinedPySource)) {
-        findings.push({
-          check: "outdated-pattern",
-          severity: entry.severity,
-          category: "outdated",
-          locations: [{ file: "source", startLine: 1 }],
-          description: `Outdated usage '${entry.from}': ${entry.description}`,
-          from: entry.from,
-          to: entry.to,
-          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
-          fixable: false,
-          confidence: 0.7,
-        });
-      }
-    }
-  }
-
-  return findings;
 }
 
 /**
@@ -763,7 +176,7 @@ const projectPath = process.cwd();
 
 const server = new McpServer({
   name: "lazy-refactor",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // ─── Scan tools ───────────────────────────────────────────────────────────────
@@ -907,6 +320,7 @@ server.registerTool(
           maxExportsPerFile: config.thresholds.maxExportsPerFile,
           maxImportsPerFile: config.thresholds.maxImportsPerFile,
           languages,
+          exclude,
         });
         allFindings.push(
           ...metricFindings.map((f) => ({
@@ -1091,6 +505,7 @@ server.registerTool(
       const result = await computeMetrics(resolvedPath, {
         ...mergedThresholds,
         languages: detected.languages,
+        exclude: config.exclude,
       });
       return ok(result);
     } catch (err) {
@@ -1369,3 +784,6 @@ main().catch((err) => {
   process.stderr.write(`Fatal: ${err.message}\n`);
   process.exit(1);
 });
+
+// Re-export engine functions that tests import directly from this module.
+export { checkOutdatedDeps, detectLanguages };
