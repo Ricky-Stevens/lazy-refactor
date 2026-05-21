@@ -9,6 +9,38 @@
 
 A Claude Code plugin for deterministic code quality scanning with AI-powered fixes. Point it at a codebase — it finds the problems, scores them, and an AI agent fixes the easy ones while you focus on the hard ones.
 
+## Install
+
+```bash
+/plugin marketplace add https://github.com/Ricky-Stevens/lazy-refactor
+/plugin install lazy-refactor
+```
+
+**Note:** Claude's `/reload-plugins` can be a bit sketchy - try opening a new session if you hit issues.
+
+### Update
+
+To pull the latest version:
+
+1. Open `/plugins`
+2. Go to **Marketplaces** tab → select the lazy-refactor marketplace → **Update marketplace**
+3. Inside the marketplace, go to **Browse Plugins** → select lazy-refactor → **Update**
+4. Run `/reload-plugins` or restart your session
+
+### Uninstall
+
+```bash
+/plugin uninstall lazy-refactor
+```
+
+### Local development
+
+```bash
+claude --plugin-dir /path/to/lazy-refactor
+```
+
+---
+
 ## What it does
 
 Scans codebases for quality issues using regex-based pattern matching, AST-free metrics, duplicate detection (Rabin-Karp), and cross-reference analysis. Findings are scored, persisted, and fixable via an AI agent that edits code and verifies with tests.
