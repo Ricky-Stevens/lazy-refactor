@@ -19,14 +19,13 @@ Display the current state of code quality scans and fixes.
 
 2. **Display state**:
    - **Total findings**: Count of all stored findings
-   - **By status**: Breakdown of open, fixed, and dismissed findings
+   - **By status**: Breakdown of open, fixed, ignored, in-progress, false-positive, and stale findings
    - **By severity**: Count at each level (critical, high, medium, low)
    - **By category**: Count in each category (duplicates, dead-code, metrics, patterns, modularity, comments, over-engineering)
 
-3. **Show timing**:
-   - Last scan timestamp
-   - Last fix timestamp (if any fixes have been applied)
-   - Time since last scan
+3. **Show scan info**:
+   - Last scan ID
+   - Scanned path
 
 4. **Provide quick actions**:
    - Suggest running `/lazy-refactor scan` if no recent scans

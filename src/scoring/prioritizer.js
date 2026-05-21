@@ -1,11 +1,10 @@
 /**
  * Finding scorer and prioritiser.
  *
- * Score formula: severityWeight * confidence * (1 / riskValue)
+ * Score formula: severityWeight * confidence
  *
  * Severity weights: critical=4, high=3, medium=2, low=1
- * Risk values:      low=1, medium=2, high=3
- * Confidence:       0.0–1.0 float on the finding
+ * Confidence:       0.0–1.0 float on the finding (defaults to 1 if absent)
  */
 
 const SEVERITY_WEIGHTS = {
@@ -13,12 +12,6 @@ const SEVERITY_WEIGHTS = {
   high: 3,
   medium: 2,
   low: 1,
-};
-
-const RISK_VALUES = {
-  low: 1,
-  medium: 2,
-  high: 3,
 };
 
 /**
@@ -29,9 +22,8 @@ const RISK_VALUES = {
  */
 export function scoreFinding(finding) {
   const severityWeight = SEVERITY_WEIGHTS[finding.severity] ?? 1;
-  const riskValue = RISK_VALUES[finding.risk] ?? 1;
   const confidence = typeof finding.confidence === "number" ? finding.confidence : 1;
-  const score = severityWeight * confidence * (1 / riskValue);
+  const score = severityWeight * confidence;
   return { ...finding, score };
 }
 

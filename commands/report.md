@@ -10,14 +10,15 @@ Display findings from the last scan, with optional filtering by severity and cat
 ## Usage
 
 ```
-/lazy-refactor report [--severity=high] [--category=duplicates] [--status=open]
+/lazy-refactor report [--severity=high] [--category=duplicates] [--status=open] [--language=go]
 ```
 
 ## Arguments
 
 - `--severity` (optional): Filter findings by severity level. Options: `critical`, `high`, `medium`, `low`. If omitted, all severities are shown.
 - `--category` (optional): Filter findings by category. Options: `duplicates`, `dead-code`, `metrics`, `patterns`, `modularity`, `comments`, `over-engineering`. If omitted, all categories are shown.
-- `--status` (optional): Filter findings by status. Options: `open`, `fixed`, `dismissed`. Defaults to `open`.
+- `--status` (optional): Filter findings by status. Options: `open`, `fixed`, `ignored`, `in-progress`, `false-positive`, `stale`. Defaults to `open`.
+- `--language` (optional): Filter findings by language. Options: `ts`, `js`, `go`, `python`, `csharp`, `java`. Matches the `language` field on pattern findings. If omitted, all languages are shown.
 
 ## Behavior
 
@@ -54,4 +55,6 @@ Display findings from the last scan, with optional filtering by severity and cat
 /lazy-refactor report --severity=high
 /lazy-refactor report --category=dead-code --status=open
 /lazy-refactor report --severity=critical,high --category=duplicates
+/lazy-refactor report --language=go
+/lazy-refactor report --language=csharp --severity=high
 ```

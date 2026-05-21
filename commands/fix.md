@@ -16,18 +16,21 @@ Apply fixes to code quality issues identified in scans, with test verification a
 ## Arguments
 
 - `<target>` (required): What to fix. Options:
-  - A specific finding ID (e.g., `FIND-001`)
-  - `all` — fix all open findings
-  - `critical` — fix all critical findings
-  - `high` — fix all high-severity findings
+  - A specific finding ID (e.g., `f-abc12345def67890`) — fixes this finding regardless of its `fixable` flag (user override)
+  - `all` — fix all open findings where `fixable: true`
+  - `critical` — fix all fixable findings with severity `critical`
+  - `high` — fix all fixable findings with severity `high` or above (`critical` + `high`)
 - `--dry-run` (optional): Show what would be fixed without making changes.
+- `--yes` (optional): Skip confirmation prompt and proceed automatically.
+
+> **Note:** Non-fixable findings require manual intervention. Use `/report` to review them.
 
 ## Behavior
 
 1. **Parse the target**:
-   - If a finding ID, validate it exists and is open
-   - If a severity level, fetch all findings at that level
-   - If `all`, fetch all open findings
+   - If a finding ID, validate it exists and is open (bypass fixable check — user override)
+   - If a severity level, fetch all open findings at that level **with `fixable: true`**
+   - If `all`, fetch all open findings **with `fixable: true`**
 
 2. **Confirm with the user** before making any changes:
    - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)

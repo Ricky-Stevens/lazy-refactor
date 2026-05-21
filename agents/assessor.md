@@ -43,6 +43,14 @@ When analyzing inconsistent patterns across the codebase:
 - Determine which variant is more maintainable or idiomatic
 - Flag when inconsistency makes reasoning about the code harder
 
+## Tools Available
+
+Use these MCP tools to interact with the system:
+- `get_findings` — Retrieve findings flagged for deep assessment
+- `get_finding` — Get details of a specific finding by ID
+- `update_finding` — Update status and notes on a finding after assessment
+- Use the Read tool to examine source files at the locations specified in findings
+
 ## Your Process
 
 1. **Receive flagged findings** from the scanner. These are files or code sections marked for deep assessment.

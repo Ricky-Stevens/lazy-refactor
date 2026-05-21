@@ -1,21 +1,6 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, extname } from 'node:path';
-
-/** Map language name -> file extensions */
-const LANGUAGE_EXTENSIONS = {
-  typescript: ['.ts', '.tsx', '.js', '.jsx'],
-  javascript: ['.js', '.jsx'],
-  go: ['.go'],
-  python: ['.py'],
-  csharp: ['.cs'],
-  java: ['.java'],
-  common: ['.ts', '.tsx', '.js', '.jsx', '.go', '.py', '.cs', '.java'],
-};
-
-/** All recognised source extensions (union of all language sets) */
-const ALL_SOURCE_EXTENSIONS = new Set(
-  Object.values(LANGUAGE_EXTENSIONS).flat()
-);
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
+import { collectFiles } from "./files.js";
 
 /**
  * Determine whether a file is a Python file by extension.
@@ -24,7 +9,7 @@ const ALL_SOURCE_EXTENSIONS = new Set(
  * @returns {boolean}
  */
 export function isPythonFile(filePath) {
-  return extname(filePath).toLowerCase() === '.py';
+  return extname(filePath).toLowerCase() === ".py";
 }
 
 /**
@@ -43,7 +28,7 @@ export function isPythonFile(filePath) {
  * }}
  */
 export function computeFileMetrics(content, filePath) {
-  const lines = content.split('\n');
+  const lines = content.split("\n");
   const lineCount = lines.length;
 
   const python = isPythonFile(filePath);
@@ -68,14 +53,14 @@ export function computeFileMetrics(content, filePath) {
     // Comment detection
     // ----------------------------------------------------------------
     const isComment =
-      trimmed.startsWith('//') ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('*') ||
-      trimmed.startsWith('/*') ||
-      trimmed.startsWith('*/') ||
-      trimmed === '';
+      trimmed.startsWith("//") ||
+      (python && trimmed.startsWith("#")) ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("*/") ||
+      trimmed === "";
 
-    if (trimmed === '') {
+    if (trimmed === "") {
       // blank lines count neither as comment nor code
     } else if (isComment) {
       commentLines++;
@@ -84,45 +69,91 @@ export function computeFileMetrics(content, filePath) {
     }
 
     // ----------------------------------------------------------------
-    // Export / import counting (language-agnostic patterns)
+    // Strip strings and comments before counting to reduce false positives.
+    // The stripped line is used for export/import detection, branch counting,
+    // and (for non-Python) nesting tracking.
     // ----------------------------------------------------------------
-    if (/\bexport\b/.test(trimmed)) exportCount++;
-    if (/\bimport\b/.test(trimmed) || /\brequire\s*\(/.test(trimmed)) importCount++;
+    let strippedLine = trimmed.replace(/\/\/.*$/, ""); // remove line comment
+    if (python) strippedLine = strippedLine.replace(/#.*$/, ""); // remove Python comment
+    strippedLine = strippedLine
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""') // remove double-quoted strings
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''"); // remove single-quoted strings
+
+    // ----------------------------------------------------------------
+    // Export / import counting. Run on the stripped line so keywords
+    // inside comments or strings don't count.
+    //
+    // Go has no `export` keyword — exported identifiers start with an
+    // uppercase letter. We approximate by counting func/type/var/const
+    // declarations with an uppercase name. For imports, we count lines
+    // inside `import (...)` blocks or standalone `import "..."` lines
+    // rather than just the `import` keyword occurrence.
+    // ----------------------------------------------------------------
+    const isGo = filePath.endsWith(".go");
+    if (isGo) {
+      if (/\b(?:func|type|var|const)\s+[A-Z]/.test(strippedLine)) exportCount++;
+      // Count individual import specs: `import "fmt"` or a line inside `import (...)`
+      // that looks like `"pkg"` or `. "pkg"` or `alias "pkg"`.
+      // We do NOT count the bare `import (` or `import "..."` keyword line twice —
+      // standalone `import "x"` matches the quoted-string pattern below.
+      if (/^\s*import\s+"/.test(strippedLine)) {
+        importCount++;
+      } else if (
+        /^\s*(?:\.\s+|[a-zA-Z_]\w*\s+)?"[^"]*"/.test(strippedLine) &&
+        !/\bimport\s*\(/.test(strippedLine) &&
+        !/^\s*import\b/.test(strippedLine)
+      ) {
+        // A line inside an import block: `  "fmt"` or `  alias "pkg"`
+        importCount++;
+      }
+    } else {
+      if (/\bexport\b/.test(strippedLine)) exportCount++;
+      if (/\bimport\b/.test(strippedLine) || /\brequire\s*\(/.test(strippedLine)) importCount++;
+    }
 
     // ----------------------------------------------------------------
     // Branch point counting
-    // Counts: if, else, switch, for, while, ternary (?), &&, ||
+    // Counts: if, else, switch, for, while, do, ternary (?), &&, ||
+    // Special cases:
+    //  - `else if` counts as 1 branch point (the `if`), not 2.
+    //  - `?.` (optional chaining) and `??` (nullish coalescing) are NOT
+    //    ternary operators and must not be counted.
     // ----------------------------------------------------------------
-    // Strip strings and comments before counting to reduce false positives
-    const strippedLine = trimmed
-      .replace(/\/\/.*$/, '')     // remove line comment
-      .replace(/#.*$/, '')        // remove Python comment
-      .replace(/"(?:[^"\\]|\\.)*"/g, '""')  // remove double-quoted strings
-      .replace(/'(?:[^'\\]|\\.)*'/g, "''"); // remove single-quoted strings
+    const ifCount = (strippedLine.match(/\bif\b/g) ?? []).length;
+    const elseCount = (strippedLine.match(/\belse\b/g) ?? []).length;
+    const elseIfCount = (strippedLine.match(/\belse\s+if\b/g) ?? []).length;
+    // Each `else if` already contributes 1 via the if count above, so we
+    // subtract it from the else count to avoid double-counting.
+    branchPointCount += ifCount + (elseCount - elseIfCount);
 
-    // Count individual branch constructs; each occurrence = +1 branch point
-    const branchPatterns = [
-      /\bif\b/g,
-      /\belse\b/g,
+    const otherBranchPatterns = [
       /\bswitch\b/g,
       /\bfor\b/g,
       /\bwhile\b/g,
       /\bdo\b/g,
-      /\?/g,           // ternary
       /&&/g,
       /\|\|/g,
     ];
-    for (const bp of branchPatterns) {
+    for (const bp of otherBranchPatterns) {
       const matches = strippedLine.match(bp);
       if (matches) branchPointCount += matches.length;
     }
+
+    // Ternary `?` count: every `?` minus the `?.` and `??` occurrences,
+    // which are unrelated operators.
+    const questionMarks = (strippedLine.match(/\?/g) ?? []).length;
+    const optionalChains = (strippedLine.match(/\?\./g) ?? []).length;
+    const nullishCoalesce = (strippedLine.match(/\?\?/g) ?? []).length;
+    // `??` contains two `?` chars but is one operator, so it inflates the
+    // raw count by 2. `?.` contains one `?` char and inflates by 1.
+    branchPointCount += questionMarks - optionalChains - nullishCoalesce * 2;
 
     // ----------------------------------------------------------------
     // Nesting depth
     // ----------------------------------------------------------------
     if (python) {
       // Indent-based nesting for Python
-      if (trimmed !== '') {
+      if (trimmed !== "") {
         const indent = line.length - line.trimStart().length;
         const currentIndent = indentStack[indentStack.length - 1];
         if (indent > currentIndent) {
@@ -139,28 +170,39 @@ export function computeFileMetrics(content, filePath) {
         if (depth > maxNestingDepth) maxNestingDepth = depth;
       }
     } else {
-      // Brace-based nesting for C-family languages (JS, TS, Go, Java, C#)
-      // Count braces on this line, updating running depth
-      for (const ch of strippedLine) {
-        if (ch === '{') {
-          nestingDepth++;
-          if (nestingDepth > maxNestingDepth) maxNestingDepth = nestingDepth;
-        } else if (ch === '}') {
-          if (nestingDepth > 0) nestingDepth--;
-        }
+      // Brace-based nesting for C-family languages (JS, TS, Go, Java, C#).
+      //
+      // Counting every `{` and `}` inflates the depth for object literals,
+      // destructuring patterns, and JSX expression containers (e.g.
+      // `const x = { a: 1 }` is one statement, not a nested block).
+      //
+      // Heuristic: a line whose stripped form ends with `{` is a block
+      // opener (function body, if/for/while/switch, class, etc.) and a
+      // line whose stripped form starts with `}` is a block closer. This
+      // misses some edge cases (single-line `} else {`) but is a much
+      // closer approximation of structural nesting than raw brace
+      // counting and never confuses object literals for blocks.
+      const trimmedEnd = strippedLine.trimEnd();
+
+      // A leading `}` closes the enclosing block. `} else {` both closes
+      // and opens, so we still process the trailing `{` below.
+      if (/^\s*\}/.test(strippedLine)) {
+        if (nestingDepth > 0) nestingDepth--;
+      }
+
+      if (trimmedEnd.endsWith("{")) {
+        nestingDepth++;
+        if (nestingDepth > maxNestingDepth) maxNestingDepth = nestingDepth;
       }
     }
   }
 
-  const totalSignificantLines = commentLines + codeLines;
-  const commentToCodeRatio =
-    codeLines === 0
-      ? 0
-      : Math.round((commentLines / codeLines) * 100) / 100;
+  // Raw float ratio — callers compare against fractional thresholds so
+  // rounding here would introduce boundary inconsistencies.
+  const commentToCodeRatio = codeLines === 0 ? 0 : commentLines / codeLines;
 
   // complexityScore = nestingDepth*3 + branchPoints*2 + lineCount/50
-  const complexityScore =
-    maxNestingDepth * 3 + branchPointCount * 2 + lineCount / 50;
+  const complexityScore = maxNestingDepth * 3 + branchPointCount * 2 + lineCount / 50;
 
   return {
     lineCount,
@@ -171,45 +213,6 @@ export function computeFileMetrics(content, filePath) {
     importCount,
     complexityScore,
   };
-}
-
-/**
- * Recursively find all source files under a directory matching requested languages.
- * @param {string} dirPath
- * @param {Set<string>} allowedExtensions
- * @returns {Promise<string[]>}
- */
-async function findSourceFiles(dirPath, allowedExtensions) {
-  const results = [];
-  let entries;
-  try {
-    entries = await readdir(dirPath, { withFileTypes: true });
-  } catch {
-    // Unreadable directory — skip silently
-    return results;
-  }
-  for (const entry of entries) {
-    // Skip common non-source directories
-    if (
-      entry.isDirectory() &&
-      (entry.name === 'node_modules' ||
-        entry.name === 'vendor' ||
-        entry.name === '.git')
-    ) {
-      continue;
-    }
-    const fullPath = join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      const sub = await findSourceFiles(fullPath, allowedExtensions);
-      results.push(...sub);
-    } else if (entry.isFile()) {
-      const ext = extname(entry.name).toLowerCase();
-      if (allowedExtensions.has(ext)) {
-        results.push(fullPath);
-      }
-    }
-  }
-  return results;
 }
 
 /**
@@ -256,19 +259,13 @@ export async function computeMetrics(path, options = {}) {
     maxExportsPerFile = 10,
     maxImportsPerFile = 15,
     languages = [],
+    exclude = [],
   } = options;
 
-  // Build the set of allowed extensions
-  let allowedExtensions;
-  if (languages.length === 0) {
-    allowedExtensions = ALL_SOURCE_EXTENSIONS;
-  } else {
-    allowedExtensions = new Set(
-      languages.flatMap((lang) => LANGUAGE_EXTENSIONS[lang] ?? [])
-    );
-  }
-
-  const filePaths = await findSourceFiles(path, allowedExtensions);
+  const filePaths = await collectFiles(path, {
+    exclude,
+    languages: languages.length > 0 ? languages : undefined,
+  });
 
   const fileMetrics = [];
   const findings = [];
@@ -276,7 +273,7 @@ export async function computeMetrics(path, options = {}) {
   for (const filePath of filePaths) {
     let content;
     try {
-      content = await readFile(filePath, 'utf8');
+      content = await readFile(filePath, "utf8");
     } catch {
       // Unreadable file — skip
       continue;
@@ -284,7 +281,7 @@ export async function computeMetrics(path, options = {}) {
 
     const metrics = computeFileMetrics(content, filePath);
     const relativePath = filePath.startsWith(path)
-      ? filePath.slice(path.length).replace(/^\//, '')
+      ? filePath.slice(path.length).replace(/^\//, "")
       : filePath;
 
     fileMetrics.push({ file: relativePath, ...metrics });
@@ -292,106 +289,106 @@ export async function computeMetrics(path, options = {}) {
     // Emit threshold findings
     if (metrics.lineCount > maxFileLines) {
       findings.push({
-        ruleId: 'metrics-long-file',
+        ruleId: "metrics-long-file",
         file: relativePath,
         line: 1,
         match: `${metrics.lineCount} lines`,
-        severity: 'medium',
-        category: 'metrics',
+        severity: "medium",
+        category: "metrics",
         description: `File exceeds ${maxFileLines} line threshold (${metrics.lineCount} lines)`,
-        suggestion: 'Split the file into smaller, focused modules.',
+        suggestion: "Split the file into smaller, focused modules.",
         fixable: false,
       });
     }
 
     if (metrics.complexityScore > maxComplexity) {
       findings.push({
-        ruleId: 'metrics-high-complexity',
+        ruleId: "metrics-high-complexity",
         file: relativePath,
         line: 1,
         match: `complexity ${metrics.complexityScore.toFixed(2)}`,
-        severity: 'high',
-        category: 'metrics',
+        severity: "high",
+        category: "metrics",
         description: `File complexity score ${metrics.complexityScore.toFixed(2)} exceeds threshold ${maxComplexity}`,
-        suggestion: 'Reduce nesting, extract functions, and simplify branching logic.',
+        suggestion: "Reduce nesting, extract functions, and simplify branching logic.",
         fixable: false,
       });
     }
 
     if (metrics.maxNestingDepth > maxNesting) {
       findings.push({
-        ruleId: 'metrics-deep-nesting',
+        ruleId: "metrics-deep-nesting",
         file: relativePath,
         line: 1,
         match: `nesting depth ${metrics.maxNestingDepth}`,
-        severity: 'medium',
-        category: 'metrics',
+        severity: "medium",
+        category: "metrics",
         description: `File max nesting depth ${metrics.maxNestingDepth} exceeds threshold ${maxNesting}`,
-        suggestion: 'Extract nested logic into named functions or guard clauses.',
+        suggestion: "Extract nested logic into named functions or guard clauses.",
         fixable: false,
       });
     }
 
     if (metrics.exportCount > maxExportsPerFile) {
       findings.push({
-        ruleId: 'metrics-high-exports',
+        ruleId: "metrics-high-exports",
         file: relativePath,
         line: 1,
         match: `${metrics.exportCount} exports`,
-        severity: 'medium',
-        check: 'modularity',
-        category: 'modularity',
+        severity: "medium",
+        check: "modularity",
+        category: "modularity",
         confidence: 0.85,
         description: `File has ${metrics.exportCount} exports, exceeding threshold of ${maxExportsPerFile}`,
-        suggestion: 'Split exports into smaller, more focused modules.',
+        suggestion: "Split exports into smaller, more focused modules.",
         fixable: false,
       });
     }
 
     if (metrics.importCount > maxImportsPerFile) {
       findings.push({
-        ruleId: 'metrics-high-imports',
+        ruleId: "metrics-high-imports",
         file: relativePath,
         line: 1,
         match: `${metrics.importCount} imports`,
-        severity: 'medium',
-        check: 'modularity',
-        category: 'modularity',
+        severity: "medium",
+        check: "modularity",
+        category: "modularity",
         confidence: 0.85,
         description: `File has ${metrics.importCount} imports, exceeding threshold of ${maxImportsPerFile}`,
-        suggestion: 'Consider reducing dependencies or splitting the file.',
+        suggestion: "Consider reducing dependencies or splitting the file.",
         fixable: false,
       });
     }
 
     if (metrics.commentToCodeRatio < 0.02 && metrics.complexityScore > 15) {
       findings.push({
-        ruleId: 'metrics-low-comments',
+        ruleId: "metrics-low-comments",
         file: relativePath,
         line: 1,
         match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
-        severity: 'low',
-        check: 'comment-quality',
-        category: 'comment-quality',
+        severity: "low",
+        check: "comment-quality",
+        category: "comment-quality",
         confidence: 0.7,
         description: `Complex file (complexity ${metrics.complexityScore.toFixed(2)}) has very low comment ratio (${metrics.commentToCodeRatio})`,
-        suggestion: 'Add explanatory comments to complex logic.',
+        suggestion: "Add explanatory comments to complex logic.",
         fixable: false,
       });
     }
 
     if (metrics.commentToCodeRatio > 0.5) {
       findings.push({
-        ruleId: 'metrics-excessive-comments',
+        ruleId: "metrics-excessive-comments",
         file: relativePath,
         line: 1,
         match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
-        severity: 'low',
-        check: 'comment-quality',
-        category: 'comment-quality',
+        severity: "low",
+        check: "comment-quality",
+        category: "comment-quality",
         confidence: 0.7,
         description: `File has excessive comment ratio (${metrics.commentToCodeRatio}) — more comments than code`,
-        suggestion: 'Review and prune redundant or narration-style comments.',
+        suggestion: "Review and prune redundant or narration-style comments.",
         fixable: false,
       });
     }

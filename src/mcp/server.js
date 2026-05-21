@@ -1,49 +1,54 @@
 /**
  * MCP server entry point for lazy-refactor.
  *
- * Exposes 14 tools:
+ * Exposes 15 tools:
  *   Scan:   run_scan, scan_duplicates, scan_dead_code, scan_metrics, scan_patterns, detect_language,
  *           scan_inconsistent_patterns, scan_over_engineering
- *   State:  get_findings, get_finding, update_finding, get_summary
+ *   State:  get_findings, get_finding, update_finding, get_summary, clear_findings
  *   Config: get_config, update_config
  */
 
-import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import * as z from 'zod';
-
-import { scanPatterns } from '../engine/pattern-scanner.js';
-import { computeMetrics } from '../engine/metrics.js';
-import { scanDeadCode, scanUnusedDeps, scanUnusedImports, scanInconsistentPatterns, scanOverEngineering } from '../engine/cross-ref.js';
-import { scanDuplicates } from '../engine/duplicates.js';
-import { scoreFinding, scoreFindings } from '../scoring/prioritizer.js';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import * as z from "zod";
 import {
-  loadFindings,
-  saveFindings,
-  addFindings,
-  updateFinding,
-  getFindings,
-  getFinding,
-  getSummary,
-} from '../state/findings.js';
-
+  scanDeadCode,
+  scanInconsistentPatterns,
+  scanOverEngineering,
+  scanUnusedDeps,
+  scanUnusedImports,
+} from "../engine/cross-ref.js";
+import { scanDuplicates } from "../engine/duplicates.js";
+import { collectFiles } from "../engine/files.js";
+import { computeMetrics } from "../engine/metrics.js";
+import { scanPatterns } from "../engine/pattern-scanner.js";
 // Language-specific rule sets
-import commonRules from '../rules/common.js';
-import typescriptRules from '../rules/typescript.js';
-import goRules from '../rules/go.js';
-import pythonRules from '../rules/python.js';
-import csharpRules from '../rules/csharp.js';
-import javaRules from '../rules/java.js';
-import outdatedPatterns from '../rules/outdated-patterns.js';
+import commonRules from "../rules/common.js";
+import csharpRules from "../rules/csharp.js";
+import goRules from "../rules/go.js";
+import javaRules from "../rules/java.js";
+import outdatedPatterns from "../rules/outdated-patterns.js";
+import pythonRules from "../rules/python.js";
+import typescriptRules from "../rules/typescript.js";
+import { scoreFindings } from "../scoring/prioritizer.js";
+import {
+  addFindings,
+  clearFindings,
+  getFinding,
+  getFindings,
+  getSummary,
+  updateFinding,
+} from "../state/findings.js";
+
 // outdated-patterns exports a Record<language, Array<{from,to,...}>> — different shape from scan rules.
 // It is NOT included in buildRules(); instead it is used by checkOutdatedDeps() for migration detection.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CONFIG_FILE = '.lazy-refactor.json';
+const CONFIG_FILE = ".lazy-refactor.json";
 
 const DEFAULT_CONFIG = {
   thresholds: {
@@ -51,12 +56,13 @@ const DEFAULT_CONFIG = {
     maxComplexity: 15,
     maxNesting: 4,
     maxExportsPerFile: 10,
+    maxImportsPerFile: 15,
     duplicateMinTokens: 50,
-    duplicateSimilarity: 0.80,
+    duplicateSimilarity: 0.8,
   },
-  exclude: ['vendor/**', 'generated/**', '*.generated.*', 'node_modules/**', '.git/**'],
+  exclude: ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],
   disabledChecks: [],
-  languages: 'auto',
+  languages: "auto",
 };
 
 /** Language name -> rule array */
@@ -79,8 +85,15 @@ const LANGUAGE_RULES = {
 function deepMerge(base, override) {
   const result = { ...base };
   for (const [key, val] of Object.entries(override)) {
-    if (val !== null && typeof val === 'object' && !Array.isArray(val) &&
-        typeof result[key] === 'object' && result[key] !== null && !Array.isArray(result[key])) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+    if (
+      val !== null &&
+      typeof val === "object" &&
+      !Array.isArray(val) &&
+      typeof result[key] === "object" &&
+      result[key] !== null &&
+      !Array.isArray(result[key])
+    ) {
       result[key] = deepMerge(result[key], val);
     } else {
       result[key] = val;
@@ -90,17 +103,31 @@ function deepMerge(base, override) {
 }
 
 /**
+ * Validate and resolve a scan path. Ensures it exists and is a directory.
+ * @param {string} inputPath
+ * @returns {Promise<string>} resolved absolute path
+ */
+async function validateScanPath(inputPath) {
+  const resolved = resolve(inputPath);
+  const info = await stat(resolved);
+  if (!info.isDirectory()) {
+    throw new Error(`Path is not a directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+/**
  * Read and merge project config with defaults.
  * @param {string} projectPath
  * @returns {Promise<object>}
  */
 async function readConfig(projectPath) {
   try {
-    const raw = await readFile(join(projectPath, CONFIG_FILE), 'utf8');
+    const raw = await readFile(join(projectPath, CONFIG_FILE), "utf8");
     const disk = JSON.parse(raw);
     return deepMerge(DEFAULT_CONFIG, disk);
   } catch (err) {
-    if (err.code === 'ENOENT') return { ...DEFAULT_CONFIG };
+    if (err.code === "ENOENT") return { ...DEFAULT_CONFIG };
     throw err;
   }
 }
@@ -112,7 +139,7 @@ async function readConfig(projectPath) {
  * @param {object} config
  */
 async function writeConfig(projectPath, config) {
-  await writeFile(join(projectPath, CONFIG_FILE), JSON.stringify(config, null, 2), 'utf8');
+  await writeFile(join(projectPath, CONFIG_FILE), JSON.stringify(config, null, 2), "utf8");
 }
 
 /**
@@ -127,7 +154,7 @@ export async function detectLanguages(projectPath) {
   // Helper: try to read a file, return content or null
   async function tryRead(file) {
     try {
-      return await readFile(join(projectPath, file), 'utf8');
+      return await readFile(join(projectPath, file), "utf8");
     } catch {
       return null;
     }
@@ -144,9 +171,9 @@ export async function detectLanguages(projectPath) {
   }
 
   // TypeScript / JavaScript: package.json with typescript dep, or tsconfig
-  const pkgJson = await tryRead('package.json');
+  const pkgJson = await tryRead("package.json");
   if (pkgJson !== null) {
-    markers['package.json'] = true;
+    markers["package.json"] = true;
     try {
       const pkg = JSON.parse(pkgJson);
       const allDeps = {
@@ -154,68 +181,137 @@ export async function detectLanguages(projectPath) {
         ...pkg.devDependencies,
         ...pkg.peerDependencies,
       };
-      if (allDeps['typescript'] || allDeps['ts-node'] || allDeps['tsx']) {
-        languages.push('typescript');
-        markers['typescript'] = true;
+      if (allDeps.typescript || allDeps["ts-node"] || allDeps.tsx) {
+        languages.push("typescript");
+        markers.typescript = true;
       } else {
         // Plain JavaScript project
-        languages.push('typescript'); // treat JS projects with package.json the same
-        markers['javascript'] = true;
+        languages.push("typescript"); // treat JS projects with package.json the same
+        markers.javascript = true;
       }
     } catch {
-      languages.push('typescript');
+      languages.push("typescript");
     }
   }
 
-  const tsConfig = await tryRead('tsconfig.json');
-  if (tsConfig !== null && !languages.includes('typescript')) {
-    languages.push('typescript');
-    markers['tsconfig.json'] = true;
+  const tsConfig = await tryRead("tsconfig.json");
+  if (tsConfig !== null && !languages.includes("typescript")) {
+    languages.push("typescript");
+    markers["tsconfig.json"] = true;
   }
 
   // Go: go.mod
-  const goMod = await tryRead('go.mod');
+  const goMod = await tryRead("go.mod");
   if (goMod !== null) {
-    languages.push('go');
-    markers['go.mod'] = true;
+    languages.push("go");
+    markers["go.mod"] = true;
   }
 
   // Python: requirements.txt or pyproject.toml
-  const requirements = await tryRead('requirements.txt');
+  const requirements = await tryRead("requirements.txt");
   if (requirements !== null) {
-    if (!languages.includes('python')) languages.push('python');
-    markers['requirements.txt'] = true;
+    if (!languages.includes("python")) languages.push("python");
+    markers["requirements.txt"] = true;
   }
-  const pyproject = await tryRead('pyproject.toml');
+  const pyproject = await tryRead("pyproject.toml");
   if (pyproject !== null) {
-    if (!languages.includes('python')) languages.push('python');
-    markers['pyproject.toml'] = true;
+    if (!languages.includes("python")) languages.push("python");
+    markers["pyproject.toml"] = true;
   }
-  const setupPy = await tryRead('setup.py');
+  const setupPy = await tryRead("setup.py");
   if (setupPy !== null) {
-    if (!languages.includes('python')) languages.push('python');
-    markers['setup.py'] = true;
+    if (!languages.includes("python")) languages.push("python");
+    markers["setup.py"] = true;
   }
 
   // C#: *.csproj or *.sln
-  const csprojFiles = await findBySuffix('.csproj');
-  const slnFiles = await findBySuffix('.sln');
+  const csprojFiles = await findBySuffix(".csproj");
+  const slnFiles = await findBySuffix(".sln");
   if (csprojFiles.length > 0 || slnFiles.length > 0) {
-    languages.push('csharp');
+    languages.push("csharp");
     if (csprojFiles.length > 0) markers[csprojFiles[0]] = true;
     if (slnFiles.length > 0) markers[slnFiles[0]] = true;
   }
 
   // Java: pom.xml or build.gradle
-  const pomXml = await tryRead('pom.xml');
+  const pomXml = await tryRead("pom.xml");
   if (pomXml !== null) {
-    languages.push('java');
-    markers['pom.xml'] = true;
+    languages.push("java");
+    markers["pom.xml"] = true;
   }
-  const buildGradle = await tryRead('build.gradle');
+  const buildGradle = await tryRead("build.gradle");
   if (buildGradle !== null) {
-    if (!languages.includes('java')) languages.push('java');
-    markers['build.gradle'] = true;
+    if (!languages.includes("java")) languages.push("java");
+    markers["build.gradle"] = true;
+  }
+
+  // Check immediate subdirectories (one level deep) for marker files
+  try {
+    const entries = await readdir(projectPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") {
+        continue;
+      }
+      const subdir = join(projectPath, entry.name);
+
+      // TypeScript / JavaScript: package.json in subdir
+      const subPkg = await tryRead(join(entry.name, "package.json"));
+      if (subPkg !== null && !languages.includes("typescript")) {
+        languages.push("typescript");
+        markers[`${entry.name}/package.json`] = true;
+      }
+
+      // Go: go.mod in subdir
+      const subGoMod = await tryRead(join(entry.name, "go.mod"));
+      if (subGoMod !== null && !languages.includes("go")) {
+        languages.push("go");
+        markers[`${entry.name}/go.mod`] = true;
+      }
+
+      // Python: requirements.txt in subdir
+      const subReq = await tryRead(join(entry.name, "requirements.txt"));
+      if (subReq !== null && !languages.includes("python")) {
+        languages.push("python");
+        markers[`${entry.name}/requirements.txt`] = true;
+      }
+
+      // Python: pyproject.toml in subdir
+      const subPyproject = await tryRead(join(entry.name, "pyproject.toml"));
+      if (subPyproject !== null && !languages.includes("python")) {
+        languages.push("python");
+        markers[`${entry.name}/pyproject.toml`] = true;
+      }
+
+      // Java: pom.xml in subdir
+      const subPom = await tryRead(join(entry.name, "pom.xml"));
+      if (subPom !== null && !languages.includes("java")) {
+        languages.push("java");
+        markers[`${entry.name}/pom.xml`] = true;
+      }
+
+      // Java: build.gradle in subdir
+      const subGradle = await tryRead(join(entry.name, "build.gradle"));
+      if (subGradle !== null && !languages.includes("java")) {
+        languages.push("java");
+        markers[`${entry.name}/build.gradle`] = true;
+      }
+
+      // C#: *.csproj in subdir
+      try {
+        const subEntries = await readdir(subdir);
+        const subCsproj = subEntries.filter((e) => e.endsWith(".csproj"));
+        const subSln = subEntries.filter((e) => e.endsWith(".sln"));
+        if ((subCsproj.length > 0 || subSln.length > 0) && !languages.includes("csharp")) {
+          languages.push("csharp");
+          if (subCsproj.length > 0) markers[`${entry.name}/${subCsproj[0]}`] = true;
+          if (subSln.length > 0) markers[`${entry.name}/${subSln[0]}`] = true;
+        }
+      } catch {
+        // skip unreadable subdirs
+      }
+    }
+  } catch {
+    // skip if root readdir fails (already handled above for root-level detection)
   }
 
   return { languages, markers };
@@ -251,19 +347,25 @@ export async function checkOutdatedDeps(projectPath, languages) {
   // Helper: try to read a file, return content or null
   async function tryRead(file) {
     try {
-      return await readFile(join(projectPath, file), 'utf8');
+      return await readFile(join(projectPath, file), "utf8");
     } catch {
       return null;
     }
   }
 
-  // JS/TS: scan package.json dependency names
-  if (languages.includes('typescript') || languages.includes('javascript')) {
-    const entries = outdatedPatterns['javascript'] ?? [];
-    const pkgJson = await tryRead('package.json');
+  // JS/TS: scan package.json dependency names AND source files for syntactic patterns
+  if (languages.includes("typescript") || languages.includes("javascript")) {
+    const entries = outdatedPatterns.javascript ?? [];
+    const pkgJson = await tryRead("package.json");
+
+    // Check package.json deps by name
     if (pkgJson !== null) {
       let pkg;
-      try { pkg = JSON.parse(pkgJson); } catch { pkg = {}; }
+      try {
+        pkg = JSON.parse(pkgJson);
+      } catch {
+        pkg = {};
+      }
       const allDeps = {
         ...pkg.dependencies,
         ...pkg.devDependencies,
@@ -271,13 +373,13 @@ export async function checkOutdatedDeps(projectPath, languages) {
       };
       for (const entry of entries) {
         // Match by package name (the 'from' field may include extra description text)
-        const depName = entry.from.split(' ')[0];
+        const depName = entry.from.split(" ")[0];
         if (allDeps[depName] !== undefined) {
           findings.push({
-            check: 'outdated-pattern',
+            check: "outdated-pattern",
             severity: entry.severity,
-            category: 'outdated',
-            locations: [{ file: 'package.json', startLine: 1 }],
+            category: "outdated",
+            locations: [{ file: "package.json", startLine: 1 }],
             description: `Outdated dependency '${entry.from}': ${entry.description}`,
             from: entry.from,
             to: entry.to,
@@ -288,12 +390,52 @@ export async function checkOutdatedDeps(projectPath, languages) {
         }
       }
     }
+
+    // Also scan source files for detectPattern matches (e.g. `var` declarations,
+    // callback-style async) — these aren't tied to a package.json dep.
+    const jsFiles = await collectFiles(projectPath, { languages: ["typescript"] });
+    const jsSources = [];
+    for (const f of jsFiles) {
+      try {
+        jsSources.push(await readFile(f, "utf8"));
+      } catch {
+        /* skip */
+      }
+    }
+    const combinedJsSource = jsSources.join("\n");
+
+    for (const entry of entries) {
+      // Skip entries already reported via package.json
+      if (findings.some((f) => f.from === entry.from)) continue;
+      if (!entry.detectPattern) continue;
+
+      let pattern;
+      try {
+        pattern = new RegExp(entry.detectPattern);
+      } catch {
+        continue;
+      }
+      if (pattern.test(combinedJsSource)) {
+        findings.push({
+          check: "outdated-pattern",
+          severity: entry.severity,
+          category: "outdated",
+          locations: [{ file: "source", startLine: 1 }],
+          description: `Outdated usage '${entry.from}': ${entry.description}`,
+          from: entry.from,
+          to: entry.to,
+          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+          fixable: false,
+          confidence: 0.7,
+        });
+      }
+    }
   }
 
   // Go: scan *.go source files for each entry's detectPattern before emitting
-  if (languages.includes('go')) {
-    const entries = outdatedPatterns['go'] ?? [];
-    const goMod = await tryRead('go.mod');
+  if (languages.includes("go")) {
+    const entries = outdatedPatterns.go ?? [];
+    const goMod = await tryRead("go.mod");
     if (goMod !== null && entries.length > 0) {
       // Collect all .go file contents recursively
       async function collectGoSources(dir) {
@@ -302,11 +444,11 @@ export async function checkOutdatedDeps(projectPath, languages) {
           const items = await readdir(dir, { withFileTypes: true });
           for (const item of items) {
             const full = join(dir, item.name);
-            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'vendor') {
+            if (item.isDirectory() && !item.name.startsWith(".") && item.name !== "vendor") {
               contents = contents.concat(await collectGoSources(full));
-            } else if (item.isFile() && item.name.endsWith('.go')) {
+            } else if (item.isFile() && item.name.endsWith(".go")) {
               try {
-                contents.push(await readFile(full, 'utf8'));
+                contents.push(await readFile(full, "utf8"));
               } catch {
                 // skip unreadable files
               }
@@ -319,17 +461,17 @@ export async function checkOutdatedDeps(projectPath, languages) {
       }
 
       const goSources = await collectGoSources(projectPath);
-      const combinedSource = goSources.join('\n');
+      const combinedSource = goSources.join("\n");
 
       for (const entry of entries) {
         const pattern = new RegExp(entry.detectPattern);
         if (!pattern.test(combinedSource)) continue;
 
         findings.push({
-          check: 'outdated-pattern',
+          check: "outdated-pattern",
           severity: entry.severity,
-          category: 'outdated',
-          locations: [{ file: 'go.mod', startLine: 1 }],
+          category: "outdated",
+          locations: [{ file: "go.mod", startLine: 1 }],
           description: `Outdated usage '${entry.from}': ${entry.description}`,
           from: entry.from,
           to: entry.to,
@@ -342,18 +484,24 @@ export async function checkOutdatedDeps(projectPath, languages) {
   }
 
   // C#: scan *.csproj for PackageReference entries, and grep source for stdlib patterns
-  if (languages.includes('csharp')) {
-    const entries = outdatedPatterns['csharp'] ?? [];
+  if (languages.includes("csharp")) {
+    const entries = outdatedPatterns.csharp ?? [];
     if (entries.length > 0) {
       // Collect .csproj file contents
-      let csprojContent = '';
+      let csprojContent = "";
       try {
         const rootEntries = await readdir(projectPath);
-        const csprojFiles = rootEntries.filter((e) => e.endsWith('.csproj'));
+        const csprojFiles = rootEntries.filter((e) => e.endsWith(".csproj"));
         for (const f of csprojFiles) {
-          try { csprojContent += await readFile(join(projectPath, f), 'utf8'); } catch { /* skip */ }
+          try {
+            csprojContent += await readFile(join(projectPath, f), "utf8");
+          } catch {
+            /* skip */
+          }
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
 
       // Collect all C# source file contents recursively
       async function collectCsSources(dir) {
@@ -362,28 +510,42 @@ export async function checkOutdatedDeps(projectPath, languages) {
           const items = await readdir(dir, { withFileTypes: true });
           for (const item of items) {
             const full = join(dir, item.name);
-            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'bin' && item.name !== 'obj') {
+            if (
+              item.isDirectory() &&
+              !item.name.startsWith(".") &&
+              item.name !== "bin" &&
+              item.name !== "obj"
+            ) {
               contents = contents.concat(await collectCsSources(full));
-            } else if (item.isFile() && item.name.endsWith('.cs')) {
-              try { contents.push(await readFile(full, 'utf8')); } catch { /* skip */ }
+            } else if (item.isFile() && item.name.endsWith(".cs")) {
+              try {
+                contents.push(await readFile(full, "utf8"));
+              } catch {
+                /* skip */
+              }
             }
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
         return contents;
       }
       const csSources = await collectCsSources(projectPath);
-      const combinedCsSource = csSources.join('\n');
+      const combinedCsSource = csSources.join("\n");
 
       for (const entry of entries) {
         // Check manifest first (PackageReference Include="X")
-        const manifestPattern = new RegExp(`PackageReference\\s+Include\\s*=\\s*["']${entry.from.split(' ')[0]}["']`, 'i');
+        const manifestPattern = new RegExp(
+          `PackageReference\\s+Include\\s*=\\s*["']${entry.from.split(" ")[0]}["']`,
+          "i",
+        );
         const sourcePattern = new RegExp(entry.detectPattern);
         if (manifestPattern.test(csprojContent) || sourcePattern.test(combinedCsSource)) {
           findings.push({
-            check: 'outdated-pattern',
+            check: "outdated-pattern",
             severity: entry.severity,
-            category: 'outdated',
-            locations: [{ file: 'project', startLine: 1 }],
+            category: "outdated",
+            locations: [{ file: "project", startLine: 1 }],
             description: `Outdated usage '${entry.from}': ${entry.description}`,
             from: entry.from,
             to: entry.to,
@@ -397,18 +559,22 @@ export async function checkOutdatedDeps(projectPath, languages) {
   }
 
   // Java: scan pom.xml/build.gradle for dependency entries, and grep source for stdlib patterns
-  if (languages.includes('java')) {
-    const entries = outdatedPatterns['java'] ?? [];
+  if (languages.includes("java")) {
+    const entries = outdatedPatterns.java ?? [];
     if (entries.length > 0) {
-      let manifestContent = '';
+      let manifestContent = "";
       try {
-        const pom = await readFile(join(projectPath, 'pom.xml'), 'utf8');
+        const pom = await readFile(join(projectPath, "pom.xml"), "utf8");
         manifestContent += pom;
-      } catch { /* no pom.xml */ }
+      } catch {
+        /* no pom.xml */
+      }
       try {
-        const gradle = await readFile(join(projectPath, 'build.gradle'), 'utf8');
+        const gradle = await readFile(join(projectPath, "build.gradle"), "utf8");
         manifestContent += gradle;
-      } catch { /* no build.gradle */ }
+      } catch {
+        /* no build.gradle */
+      }
 
       // Collect all Java source file contents recursively
       async function collectJavaSources(dir) {
@@ -417,31 +583,49 @@ export async function checkOutdatedDeps(projectPath, languages) {
           const items = await readdir(dir, { withFileTypes: true });
           for (const item of items) {
             const full = join(dir, item.name);
-            if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'target' && item.name !== 'build') {
+            if (
+              item.isDirectory() &&
+              !item.name.startsWith(".") &&
+              item.name !== "target" &&
+              item.name !== "build"
+            ) {
               contents = contents.concat(await collectJavaSources(full));
-            } else if (item.isFile() && item.name.endsWith('.java')) {
-              try { contents.push(await readFile(full, 'utf8')); } catch { /* skip */ }
+            } else if (item.isFile() && item.name.endsWith(".java")) {
+              try {
+                contents.push(await readFile(full, "utf8"));
+              } catch {
+                /* skip */
+              }
             }
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
         return contents;
       }
       const javaSources = await collectJavaSources(projectPath);
-      const combinedJavaSource = javaSources.join('\n');
+      const combinedJavaSource = javaSources.join("\n");
 
       for (const entry of entries) {
         // Check manifest (pom.xml <artifactId>X</artifactId> or build.gradle implementation 'group:artifact')
-        const artifactName = entry.from.split('.').pop().split(' ')[0];
-        const pomPattern = new RegExp(`<artifactId>\\s*${artifactName}\\s*</artifactId>`, 'i');
-        const gradlePattern = new RegExp(`implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`, 'i');
+        const artifactName = entry.from.split(".").pop().split(" ")[0];
+        const pomPattern = new RegExp(`<artifactId>\\s*${artifactName}\\s*</artifactId>`, "i");
+        const gradlePattern = new RegExp(
+          `implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`,
+          "i",
+        );
         const sourcePattern = new RegExp(entry.detectPattern);
 
-        if (pomPattern.test(manifestContent) || gradlePattern.test(manifestContent) || sourcePattern.test(combinedJavaSource)) {
+        if (
+          pomPattern.test(manifestContent) ||
+          gradlePattern.test(manifestContent) ||
+          sourcePattern.test(combinedJavaSource)
+        ) {
           findings.push({
-            check: 'outdated-pattern',
+            check: "outdated-pattern",
             severity: entry.severity,
-            category: 'outdated',
-            locations: [{ file: 'project', startLine: 1 }],
+            category: "outdated",
+            locations: [{ file: "project", startLine: 1 }],
             description: `Outdated usage '${entry.from}': ${entry.description}`,
             from: entry.from,
             to: entry.to,
@@ -454,26 +638,30 @@ export async function checkOutdatedDeps(projectPath, languages) {
     }
   }
 
-  // Python: scan requirements.txt for deprecated packages
-  if (languages.includes('python')) {
-    const entries = outdatedPatterns['python'] ?? [];
-    const requirements = await tryRead('requirements.txt');
+  // Python: scan requirements.txt for deprecated packages AND .py source files for detectPattern
+  if (languages.includes("python")) {
+    const entries = outdatedPatterns.python ?? [];
+    const requirements = await tryRead("requirements.txt");
+    const reportedFroms = new Set();
+
     if (requirements !== null) {
-      const lines = requirements.split('\n').map((l) => l.trim());
+      const lines = requirements.split("\n").map((l) => l.trim());
       for (const entry of entries) {
-        const depName = entry.from.split(' ')[0].toLowerCase();
-        const matched = lines.some((line) =>
-          line.toLowerCase().startsWith(depName + '==') ||
-          line.toLowerCase().startsWith(depName + '>=') ||
-          line.toLowerCase().startsWith(depName + '>') ||
-          line.toLowerCase() === depName,
+        const depName = entry.from.split(" ")[0].toLowerCase();
+        const matched = lines.some(
+          (line) =>
+            line.toLowerCase().startsWith(`${depName}==`) ||
+            line.toLowerCase().startsWith(`${depName}>=`) ||
+            line.toLowerCase().startsWith(`${depName}>`) ||
+            line.toLowerCase() === depName,
         );
         if (matched) {
+          reportedFroms.add(entry.from);
           findings.push({
-            check: 'outdated-pattern',
+            check: "outdated-pattern",
             severity: entry.severity,
-            category: 'outdated',
-            locations: [{ file: 'requirements.txt', startLine: 1 }],
+            category: "outdated",
+            locations: [{ file: "requirements.txt", startLine: 1 }],
             description: `Outdated dependency '${entry.from}': ${entry.description}`,
             from: entry.from,
             to: entry.to,
@@ -482,6 +670,67 @@ export async function checkOutdatedDeps(projectPath, languages) {
             confidence: 0.9,
           });
         }
+      }
+    }
+
+    // Also scan .py source files for detectPattern matches (stdlib modules like
+    // urllib2, optparse etc. are not pip packages — they appear in source imports).
+    async function collectPySources(dir) {
+      let contents = [];
+      try {
+        const items = await readdir(dir, { withFileTypes: true });
+        for (const item of items) {
+          const full = join(dir, item.name);
+          if (
+            item.isDirectory() &&
+            !item.name.startsWith(".") &&
+            item.name !== "node_modules" &&
+            item.name !== "__pycache__" &&
+            item.name !== "venv" &&
+            item.name !== ".venv" &&
+            item.name !== "dist"
+          ) {
+            contents = contents.concat(await collectPySources(full));
+          } else if (item.isFile() && item.name.endsWith(".py")) {
+            try {
+              contents.push(await readFile(full, "utf8"));
+            } catch {
+              /* skip */
+            }
+          }
+        }
+      } catch {
+        /* skip */
+      }
+      return contents;
+    }
+
+    const pySources = await collectPySources(projectPath);
+    const combinedPySource = pySources.join("\n");
+
+    for (const entry of entries) {
+      if (reportedFroms.has(entry.from)) continue;
+      if (!entry.detectPattern) continue;
+
+      let pattern;
+      try {
+        pattern = new RegExp(entry.detectPattern);
+      } catch {
+        continue;
+      }
+      if (pattern.test(combinedPySource)) {
+        findings.push({
+          check: "outdated-pattern",
+          severity: entry.severity,
+          category: "outdated",
+          locations: [{ file: "source", startLine: 1 }],
+          description: `Outdated usage '${entry.from}': ${entry.description}`,
+          from: entry.from,
+          to: entry.to,
+          suggestion: `Migrate from '${entry.from}' to '${entry.to}'.`,
+          fixable: false,
+          confidence: 0.7,
+        });
       }
     }
   }
@@ -495,7 +744,7 @@ export async function checkOutdatedDeps(projectPath, languages) {
  * @returns {{content: Array<{type: string, text: string}>}}
  */
 function ok(data) {
-  return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+  return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
 /**
@@ -505,7 +754,7 @@ function ok(data) {
  */
 function fail(err) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
+  return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
 }
 
 // ─── Server bootstrap ─────────────────────────────────────────────────────────
@@ -513,29 +762,45 @@ function fail(err) {
 const projectPath = process.cwd();
 
 const server = new McpServer({
-  name: 'lazy-refactor',
-  version: '0.1.0',
+  name: "lazy-refactor",
+  version: "0.1.0",
 });
 
 // ─── Scan tools ───────────────────────────────────────────────────────────────
 
 server.registerTool(
-  'run_scan',
+  "run_scan",
   {
-    description: 'Run all (or a focused subset of) scan engines, score findings, and persist them.',
+    description: "Run all (or a focused subset of) scan engines, score findings, and persist them.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
-      options: z.object({
-        focus: z.array(z.string()).optional().describe('Subset: duplicates, dead-code, metrics, patterns, inconsistent-patterns, over-engineering, outdated'),
-        exclude: z.array(z.string()).optional().describe('Additional glob patterns to exclude'),
-        languages: z.array(z.string()).optional().describe('Override language detection'),
-      }).optional(),
+      path: z.string().describe("Directory to scan"),
+      options: z
+        .object({
+          focus: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Subset: duplicates, dead-code, metrics, patterns, inconsistent-patterns, over-engineering, outdated",
+            ),
+          exclude: z.array(z.string()).optional().describe("Additional glob patterns to exclude"),
+          languages: z.array(z.string()).optional().describe("Override language detection"),
+        })
+        .optional(),
     }),
   },
   async ({ path: scanPath, options = {} }) => {
     try {
+      const resolvedPath = await validateScanPath(scanPath);
       const config = await readConfig(projectPath);
-      const focus = options.focus ?? ['duplicates', 'dead-code', 'metrics', 'patterns', 'inconsistent-patterns', 'over-engineering', 'outdated'];
+      const focus = options.focus ?? [
+        "duplicates",
+        "dead-code",
+        "metrics",
+        "patterns",
+        "inconsistent-patterns",
+        "over-engineering",
+        "outdated",
+      ];
       const exclude = [...config.exclude, ...(options.exclude ?? [])];
       const langOverride = options.languages;
 
@@ -543,83 +808,99 @@ server.registerTool(
       let languages;
       if (langOverride && langOverride.length > 0) {
         languages = langOverride;
-      } else if (config.languages !== 'auto') {
+      } else if (config.languages !== "auto") {
         languages = Array.isArray(config.languages) ? config.languages : [config.languages];
       } else {
-        const detected = await detectLanguages(scanPath);
+        const detected = await detectLanguages(resolvedPath);
         languages = detected.languages;
       }
 
       const rules = buildRules(languages);
       const allFindings = [];
 
-      if (focus.includes('duplicates')) {
-        const dupes = await scanDuplicates(scanPath, {
+      if (focus.includes("duplicates")) {
+        const dupes = await scanDuplicates(resolvedPath, {
           minTokens: config.thresholds.duplicateMinTokens,
           similarity: config.thresholds.duplicateSimilarity,
           exclude,
           languages,
         });
-        allFindings.push(...dupes.map((f) => ({
-          check: f.check,
-          severity: 'medium',
-          category: 'duplication',
-          locations: [{ file: f.fileA, startLine: f.startLineA, endLine: f.endLineA }],
-          description: `Duplicate code block between ${f.fileA} and ${f.fileB}`,
-          similarity: f.similarity,
-          tokenCount: f.tokenCount,
-          fileB: f.fileB,
-          startLineB: f.startLineB,
-          endLineB: f.endLineB,
-          suggestion: 'Extract shared logic into a reusable function or module.',
-          fixable: false,
-          confidence: f.similarity,
-        })));
+        allFindings.push(
+          ...dupes.map((f) => ({
+            check: f.check,
+            severity: "medium",
+            category: "duplication",
+            locations: [{ file: f.fileA, startLine: f.startLineA, endLine: f.endLineA }],
+            description: `Duplicate code block between ${f.fileA} and ${f.fileB}`,
+            similarity: f.similarity,
+            tokenCount: f.tokenCount,
+            fileB: f.fileB,
+            startLineB: f.startLineB,
+            endLineB: f.endLineB,
+            suggestion: "Extract shared logic into a reusable function or module.",
+            fixable: false,
+            confidence: f.similarity,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('dead-code')) {
-        const dead = await scanDeadCode(scanPath, {}, { exclude, languages });
-        allFindings.push(...dead.map((f) => ({
-          check: f.check,
-          severity: 'low',
-          category: 'dead-code',
-          locations: [{ file: f.file.replace(scanPath + '/', ''), startLine: f.exportLine + 1 }],
-          description: `Exported symbol '${f.symbol}' appears unused`,
-          symbol: f.symbol,
-          suggestion: 'Remove the export or verify it is consumed externally.',
-          fixable: false,
-          confidence: f.confidence,
-        })));
+      if (focus.includes("dead-code")) {
+        const dead = await scanDeadCode(resolvedPath, {}, { exclude, languages });
+        allFindings.push(
+          ...dead.map((f) => ({
+            check: f.check,
+            severity: "low",
+            category: "dead-code",
+            locations: [
+              { file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.exportLine + 1 },
+            ],
+            description: `Exported symbol '${f.symbol}' appears unused`,
+            symbol: f.symbol,
+            suggestion: "Remove the export or verify it is consumed externally.",
+            fixable: false,
+            confidence: f.confidence,
+            language: f.language ?? "common",
+          })),
+        );
 
-        const unusedDeps = await scanUnusedDeps(scanPath, { exclude });
-        allFindings.push(...unusedDeps.map((f) => ({
-          check: f.check,
-          severity: 'low',
-          category: 'dead-code',
-          locations: [],
-          description: `Dependency '${f.dep}' declared in ${f.manifest} manifest but not referenced in source`,
-          dep: f.dep,
-          suggestion: 'Remove the dependency or verify it is used via dynamic require.',
-          fixable: false,
-          confidence: 0.7,
-        })));
+        const unusedDeps = await scanUnusedDeps(resolvedPath, { exclude });
+        allFindings.push(
+          ...unusedDeps.map((f) => ({
+            check: f.check,
+            severity: "low",
+            category: "dead-code",
+            locations: [],
+            description: `Dependency '${f.dep}' declared in ${f.manifest} manifest but not referenced in source`,
+            dep: f.dep,
+            suggestion: "Remove the dependency or verify it is used via dynamic require.",
+            fixable: false,
+            confidence: 0.7,
+            language: f.language ?? "common",
+          })),
+        );
 
-        const unusedImports = await scanUnusedImports(scanPath, { exclude, languages });
-        allFindings.push(...unusedImports.map((f) => ({
-          check: f.check,
-          severity: 'low',
-          category: 'dead-code',
-          locations: [{ file: f.file.replace(scanPath + '/', ''), startLine: f.importLine + 1 }],
-          description: `Import '${f.symbol}' is never used`,
-          symbol: f.symbol,
-          suggestion: 'Remove the unused import.',
-          fixable: true,
-          confidence: 0.85,
-        })));
+        const unusedImports = await scanUnusedImports(resolvedPath, { exclude, languages });
+        allFindings.push(
+          ...unusedImports.map((f) => ({
+            check: f.check,
+            severity: "low",
+            category: "dead-code",
+            locations: [
+              { file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.importLine + 1 },
+            ],
+            description: `Import '${f.symbol}' is never used`,
+            symbol: f.symbol,
+            suggestion: "Remove the unused import.",
+            fixable: true,
+            confidence: 0.85,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('metrics')) {
-        const { findings: metricFindings } = await computeMetrics(scanPath, {
+      if (focus.includes("metrics")) {
+        const { findings: metricFindings } = await computeMetrics(resolvedPath, {
           maxFileLines: config.thresholds.maxFileLines,
           maxComplexity: config.thresholds.maxComplexity,
           maxNesting: config.thresholds.maxNesting,
@@ -627,76 +908,101 @@ server.registerTool(
           maxImportsPerFile: config.thresholds.maxImportsPerFile,
           languages,
         });
-        allFindings.push(...metricFindings.map((f) => ({
-          check: f.ruleId,
-          severity: f.severity,
-          category: f.category,
-          locations: [{ file: f.file, startLine: f.line }],
-          description: f.description,
-          suggestion: f.suggestion,
-          fixable: f.fixable,
-          confidence: 0.95,
-        })));
+        allFindings.push(
+          ...metricFindings.map((f) => ({
+            check: f.ruleId,
+            severity: f.severity,
+            category: f.category,
+            locations: [{ file: f.file, startLine: f.line }],
+            description: f.description,
+            suggestion: f.suggestion,
+            fixable: f.fixable,
+            confidence: 0.95,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('patterns')) {
-        const patternFindings = await scanPatterns(scanPath, rules, { exclude, languages });
-        allFindings.push(...patternFindings.map((f) => ({
-          check: f.ruleId,
-          severity: f.severity,
-          category: f.category,
-          locations: [{ file: f.file, startLine: f.line }],
-          description: f.description,
-          suggestion: f.suggestion,
-          fixable: f.fixable,
-          confidence: 0.9,
-        })));
+      if (focus.includes("patterns")) {
+        const patternFindings = await scanPatterns(resolvedPath, rules, { exclude, languages });
+        allFindings.push(
+          ...patternFindings.map((f) => ({
+            check: f.ruleId,
+            severity: f.severity,
+            category: f.category,
+            locations: [{ file: f.file, startLine: f.line }],
+            description: f.description,
+            suggestion: f.suggestion,
+            fixable: f.fixable,
+            confidence: 0.9,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('inconsistent-patterns')) {
-        const inconsistentFindings = await scanInconsistentPatterns(scanPath, { exclude, languages });
-        allFindings.push(...inconsistentFindings.map((f) => ({
-          check: f.check ?? 'inconsistent-pattern',
-          severity: f.severity ?? 'low',
-          category: f.category ?? 'consistency',
-          locations: f.locations ?? (f.file ? [{ file: f.file.replace(scanPath + '/', ''), startLine: f.line ?? 1 }] : []),
-          description: f.description,
-          suggestion: f.suggestion ?? 'Align with the predominant pattern used elsewhere in the codebase.',
-          fixable: f.fixable ?? false,
-          confidence: f.confidence ?? 0.75,
-        })));
+      if (focus.includes("inconsistent-patterns")) {
+        const inconsistentFindings = await scanInconsistentPatterns(resolvedPath, {
+          exclude,
+          languages,
+        });
+        allFindings.push(
+          ...inconsistentFindings.map((f) => ({
+            check: f.check ?? "inconsistent-pattern",
+            severity: f.severity ?? "low",
+            category: f.category ?? "consistency",
+            locations:
+              f.locations ??
+              (f.file
+                ? [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line ?? 1 }]
+                : []),
+            description: f.description,
+            suggestion:
+              f.suggestion ?? "Align with the predominant pattern used elsewhere in the codebase.",
+            fixable: f.fixable ?? false,
+            confidence: f.confidence ?? 0.75,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('over-engineering')) {
-        const overEngFindings = await scanOverEngineering(scanPath, { exclude, languages });
-        allFindings.push(...overEngFindings.map((f) => ({
-          check: f.check ?? 'over-engineering',
-          severity: f.severity ?? 'low',
-          category: f.category ?? 'complexity',
-          locations: f.locations ?? (f.file ? [{ file: f.file.replace(scanPath + '/', ''), startLine: f.line ?? 1 }] : []),
-          description: f.description,
-          suggestion: f.suggestion ?? 'Simplify to the minimum viable abstraction.',
-          fixable: f.fixable ?? false,
-          confidence: f.confidence ?? 0.7,
-        })));
+      if (focus.includes("over-engineering")) {
+        const overEngFindings = await scanOverEngineering(resolvedPath, { exclude, languages });
+        allFindings.push(
+          ...overEngFindings.map((f) => ({
+            check: f.check ?? "over-engineering",
+            severity: f.severity ?? "low",
+            category: f.category ?? "complexity",
+            locations:
+              f.locations ??
+              (f.file
+                ? [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line ?? 1 }]
+                : []),
+            description: f.description,
+            suggestion: f.suggestion ?? "Simplify to the minimum viable abstraction.",
+            fixable: f.fixable ?? false,
+            confidence: f.confidence ?? 0.7,
+            language: f.language ?? "common",
+          })),
+        );
       }
 
-      if (focus.includes('outdated')) {
-        const outdatedFindings = await checkOutdatedDeps(scanPath, languages);
+      if (focus.includes("outdated")) {
+        const outdatedFindings = await checkOutdatedDeps(resolvedPath, languages);
         allFindings.push(...outdatedFindings);
       }
 
       // Filter out disabled checks
-      const filtered = config.disabledChecks && config.disabledChecks.length > 0
-        ? allFindings.filter((f) => !config.disabledChecks.includes(f.check))
-        : allFindings;
+      const filtered =
+        config.disabledChecks && config.disabledChecks.length > 0
+          ? allFindings.filter((f) => !config.disabledChecks.includes(f.check))
+          : allFindings;
 
       // Score findings
       const scored = scoreFindings(filtered);
 
       // Persist
       const scanId = `scan-${Date.now()}`;
-      await addFindings(projectPath, scored, scanId, scanPath);
+      await addFindings(projectPath, scored, scanId, resolvedPath);
 
       const summary = await getSummary(projectPath);
       return ok({ scanId, totalFindings: scored.length, summary });
@@ -707,18 +1013,25 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_duplicates',
+  "scan_duplicates",
   {
-    description: 'Scan a directory for duplicate code blocks.',
+    description:
+      "Scan a directory for duplicate code blocks. Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
-      minTokens: z.number().optional().describe('Minimum token window size (default 50)'),
-      similarity: z.number().optional().describe('Minimum similarity ratio 0–1 (default 0.80)'),
+      path: z.string().describe("Directory to scan"),
+      minTokens: z.number().optional().describe("Minimum token window size (default 50)"),
+      similarity: z.number().optional().describe("Minimum similarity ratio 0–1 (default 0.80)"),
     }),
   },
   async ({ path: scanPath, minTokens, similarity }) => {
     try {
-      const findings = await scanDuplicates(scanPath, { minTokens, similarity });
+      const resolvedPath = await validateScanPath(scanPath);
+      const config = await readConfig(projectPath);
+      const findings = await scanDuplicates(resolvedPath, {
+        minTokens,
+        similarity,
+        exclude: config.exclude,
+      });
       return ok(findings);
     } catch (err) {
       return fail(err);
@@ -727,19 +1040,24 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_dead_code',
+  "scan_dead_code",
   {
-    description: 'Scan for dead code: unused exports, unused dependencies, and unused imports.',
+    description:
+      "Scan for dead code: unused exports, unused dependencies, and unused imports. Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
+      path: z.string().describe("Directory to scan"),
     }),
   },
   async ({ path: scanPath }) => {
     try {
+      const resolvedPath = await validateScanPath(scanPath);
+      const config = await readConfig(projectPath);
+      const detected = await detectLanguages(resolvedPath);
+      const langs = detected.languages;
       const [dead, unusedDeps, unusedImports] = await Promise.all([
-        scanDeadCode(scanPath),
-        scanUnusedDeps(scanPath),
-        scanUnusedImports(scanPath),
+        scanDeadCode(resolvedPath, {}, { exclude: config.exclude, languages: langs }),
+        scanUnusedDeps(resolvedPath, { exclude: config.exclude }),
+        scanUnusedImports(resolvedPath, { exclude: config.exclude, languages: langs }),
       ]);
       return ok({ deadCode: dead, unusedDeps, unusedImports });
     } catch (err) {
@@ -749,21 +1067,31 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_metrics',
+  "scan_metrics",
   {
-    description: 'Compute per-file complexity and size metrics.',
+    description:
+      "Compute per-file complexity and size metrics. Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
-      thresholds: z.object({
-        maxFileLines: z.number().optional(),
-        maxComplexity: z.number().optional(),
-        maxNesting: z.number().optional(),
-      }).optional(),
+      path: z.string().describe("Directory to scan"),
+      thresholds: z
+        .object({
+          maxFileLines: z.number().optional(),
+          maxComplexity: z.number().optional(),
+          maxNesting: z.number().optional(),
+        })
+        .optional(),
     }),
   },
   async ({ path: scanPath, thresholds }) => {
     try {
-      const result = await computeMetrics(scanPath, thresholds ?? {});
+      const resolvedPath = await validateScanPath(scanPath);
+      const config = await readConfig(projectPath);
+      const detected = await detectLanguages(resolvedPath);
+      const mergedThresholds = { ...config.thresholds, ...(thresholds ?? {}) };
+      const result = await computeMetrics(resolvedPath, {
+        ...mergedThresholds,
+        languages: detected.languages,
+      });
       return ok(result);
     } catch (err) {
       return fail(err);
@@ -772,23 +1100,29 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_patterns',
+  "scan_patterns",
   {
-    description: 'Scan for anti-pattern rule violations.',
+    description:
+      "Scan for anti-pattern rule violations. Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
-      categories: z.array(z.string()).optional().describe('Filter to specific categories'),
+      path: z.string().describe("Directory to scan"),
+      categories: z.array(z.string()).optional().describe("Filter to specific categories"),
     }),
   },
   async ({ path: scanPath, categories }) => {
     try {
+      const resolvedPath = await validateScanPath(scanPath);
       const config = await readConfig(projectPath);
-      const detected = await detectLanguages(scanPath);
+      const detected = await detectLanguages(resolvedPath);
       const rules = buildRules(detected.languages);
-      const filtered = categories && categories.length > 0
-        ? rules.filter((r) => categories.includes(r.category))
-        : rules;
-      const findings = await scanPatterns(scanPath, filtered, { exclude: config.exclude });
+      const filtered =
+        categories && categories.length > 0
+          ? rules.filter((r) => categories.includes(r.category))
+          : rules;
+      const findings = await scanPatterns(resolvedPath, filtered, {
+        exclude: config.exclude,
+        languages: detected.languages,
+      });
       return ok(findings);
     } catch (err) {
       return fail(err);
@@ -797,16 +1131,23 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_inconsistent_patterns',
+  "scan_inconsistent_patterns",
   {
-    description: 'Scan for inconsistent coding patterns across the codebase (Check 10).',
+    description:
+      "Scan for inconsistent coding patterns across the codebase (Check 10). Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
+      path: z.string().describe("Directory to scan"),
     }),
   },
   async ({ path: scanPath }) => {
     try {
-      const findings = await scanInconsistentPatterns(scanPath, {});
+      const resolvedPath = await validateScanPath(scanPath);
+      const config = await readConfig(projectPath);
+      const detected = await detectLanguages(resolvedPath);
+      const findings = await scanInconsistentPatterns(resolvedPath, {
+        exclude: config.exclude,
+        languages: detected.languages,
+      });
       return ok(findings);
     } catch (err) {
       return fail(err);
@@ -815,16 +1156,23 @@ server.registerTool(
 );
 
 server.registerTool(
-  'scan_over_engineering',
+  "scan_over_engineering",
   {
-    description: 'Scan for over-engineered abstractions and unnecessary complexity (Check 13).',
+    description:
+      "Scan for over-engineered abstractions and unnecessary complexity (Check 13). Returns raw results without persisting. Use run_scan to persist findings.",
     inputSchema: z.object({
-      path: z.string().describe('Directory to scan'),
+      path: z.string().describe("Directory to scan"),
     }),
   },
   async ({ path: scanPath }) => {
     try {
-      const findings = await scanOverEngineering(scanPath, {});
+      const resolvedPath = await validateScanPath(scanPath);
+      const config = await readConfig(projectPath);
+      const detected = await detectLanguages(resolvedPath);
+      const findings = await scanOverEngineering(resolvedPath, {
+        exclude: config.exclude,
+        languages: detected.languages,
+      });
       return ok(findings);
     } catch (err) {
       return fail(err);
@@ -833,16 +1181,17 @@ server.registerTool(
 );
 
 server.registerTool(
-  'detect_language',
+  "detect_language",
   {
-    description: 'Detect the programming languages in use at a project path.',
+    description: "Detect the programming languages in use at a project path.",
     inputSchema: z.object({
-      path: z.string().describe('Project directory path'),
+      path: z.string().describe("Project directory path"),
     }),
   },
   async ({ path: scanPath }) => {
     try {
-      const result = await detectLanguages(scanPath);
+      const resolvedPath = await validateScanPath(scanPath);
+      const result = await detectLanguages(resolvedPath);
       return ok(result);
     } catch (err) {
       return fail(err);
@@ -853,22 +1202,38 @@ server.registerTool(
 // ─── State tools ──────────────────────────────────────────────────────────────
 
 server.registerTool(
-  'get_findings',
+  "get_findings",
   {
-    description: 'Return persisted findings, optionally filtered.',
+    description: "Return persisted findings, optionally filtered. Supports pagination.",
     inputSchema: z.object({
-      filter: z.object({
-        severity: z.union([z.string(), z.array(z.string())]).optional(),
-        category: z.union([z.string(), z.array(z.string())]).optional(),
-        status: z.union([z.string(), z.array(z.string())]).optional(),
-        language: z.union([z.string(), z.array(z.string())]).optional(),
-      }).optional(),
+      filter: z
+        .object({
+          severity: z.union([z.string(), z.array(z.string())]).optional(),
+          category: z.union([z.string(), z.array(z.string())]).optional(),
+          status: z.union([z.string(), z.array(z.string())]).optional(),
+          language: z.union([z.string(), z.array(z.string())]).optional(),
+        })
+        .optional(),
+      limit: z.number().optional().describe("Maximum findings to return (default 200)"),
+      offset: z.number().optional().describe("Skip this many findings (for pagination)"),
     }),
   },
-  async ({ filter }) => {
+  async ({ filter, limit, offset }) => {
     try {
-      const findings = await getFindings(projectPath, filter ?? {});
-      return ok(findings);
+      const filtered = await getFindings(projectPath, filter ?? {});
+      const total = filtered.length;
+      const effectiveOffset = offset ?? 0;
+      const effectiveLimit = limit ?? 200;
+      let results = filtered;
+      if (effectiveOffset) results = results.slice(effectiveOffset);
+      results = results.slice(0, effectiveLimit);
+      return ok({
+        findings: results,
+        total,
+        offset: effectiveOffset,
+        limit: effectiveLimit,
+        truncated: total > effectiveOffset + effectiveLimit,
+      });
     } catch (err) {
       return fail(err);
     }
@@ -876,11 +1241,11 @@ server.registerTool(
 );
 
 server.registerTool(
-  'get_finding',
+  "get_finding",
   {
-    description: 'Return a single finding by ID.',
+    description: "Return a single finding by ID.",
     inputSchema: z.object({
-      id: z.string().describe('Finding ID'),
+      id: z.string().describe("Finding ID"),
     }),
   },
   async ({ id }) => {
@@ -897,13 +1262,15 @@ server.registerTool(
 );
 
 server.registerTool(
-  'update_finding',
+  "update_finding",
   {
-    description: 'Update the status and/or notes on a finding.',
+    description: "Update the status and/or notes on a finding.",
     inputSchema: z.object({
-      id: z.string().describe('Finding ID'),
-      status: z.string().describe('New status: open | fixed | ignored | in-progress | false-positive'),
-      notes: z.string().optional().describe('Optional notes'),
+      id: z.string().describe("Finding ID"),
+      status: z
+        .enum(["open", "fixed", "ignored", "in-progress", "false-positive", "stale"])
+        .describe("New status"),
+      notes: z.string().optional().describe("Optional notes"),
     }),
   },
   async ({ id, status, notes }) => {
@@ -920,9 +1287,25 @@ server.registerTool(
 );
 
 server.registerTool(
-  'get_summary',
+  "clear_findings",
   {
-    description: 'Return summary statistics for all persisted findings.',
+    description: "Clear all persisted findings and reset scan state.",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    try {
+      await clearFindings(projectPath);
+      return ok({ cleared: true });
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "get_summary",
+  {
+    description: "Return summary statistics for all persisted findings.",
     inputSchema: z.object({}),
   },
   async () => {
@@ -938,9 +1321,9 @@ server.registerTool(
 // ─── Config tools ─────────────────────────────────────────────────────────────
 
 server.registerTool(
-  'get_config',
+  "get_config",
   {
-    description: 'Read project config, merged with defaults.',
+    description: "Read project config, merged with defaults.",
     inputSchema: z.object({}),
   },
   async () => {
@@ -954,11 +1337,11 @@ server.registerTool(
 );
 
 server.registerTool(
-  'update_config',
+  "update_config",
   {
-    description: 'Deep-merge overrides into project config and write .lazy-refactor.json.',
+    description: "Deep-merge overrides into project config and write .lazy-refactor.json.",
     inputSchema: z.object({
-      overrides: z.record(z.unknown()).describe('Config fields to merge'),
+      overrides: z.record(z.unknown()).describe("Config fields to merge"),
     }),
   },
   async ({ overrides }) => {
@@ -979,7 +1362,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Use stderr to avoid corrupting the JSON-RPC stdio channel
-  process.stderr.write('lazy-refactor MCP server running\n');
+  process.stderr.write("lazy-refactor MCP server running\n");
 }
 
 main().catch((err) => {

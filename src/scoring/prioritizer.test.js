@@ -8,20 +8,19 @@ function finding(overrides = {}) {
     check: "test-check",
     severity: "medium",
     confidence: 1.0,
-    risk: "low",
     ...overrides,
   };
 }
 
 describe("scoreFinding", () => {
   it("produces the expected numeric score", () => {
-    // critical(4) * confidence(0.8) * (1/risk_medium(2)) = 4 * 0.8 * 0.5 = 1.6
-    const result = scoreFinding(finding({ severity: "critical", confidence: 0.8, risk: "medium" }));
-    expect(result.score).toBeCloseTo(1.6);
+    // critical(4) * confidence(0.8) = 3.2
+    const result = scoreFinding(finding({ severity: "critical", confidence: 0.8 }));
+    expect(result.score).toBeCloseTo(3.2);
   });
 
   it("adds score field without mutating other fields", () => {
-    const f = finding({ severity: "high", confidence: 1.0, risk: "low" });
+    const f = finding({ severity: "high", confidence: 1.0 });
     const result = scoreFinding(f);
     expect(result.id).toBe(f.id);
     expect(result.check).toBe(f.check);
@@ -31,61 +30,67 @@ describe("scoreFinding", () => {
   });
 
   it("critical severity scores higher than high", () => {
-    const base = { confidence: 1.0, risk: "low" };
+    const base = { confidence: 1.0 };
     const critical = scoreFinding(finding({ ...base, severity: "critical" }));
     const high = scoreFinding(finding({ ...base, severity: "high" }));
     expect(critical.score).toBeGreaterThan(high.score);
   });
 
   it("high severity scores higher than medium", () => {
-    const base = { confidence: 1.0, risk: "low" };
+    const base = { confidence: 1.0 };
     const high = scoreFinding(finding({ ...base, severity: "high" }));
     const medium = scoreFinding(finding({ ...base, severity: "medium" }));
     expect(high.score).toBeGreaterThan(medium.score);
   });
 
   it("medium severity scores higher than low", () => {
-    const base = { confidence: 1.0, risk: "low" };
+    const base = { confidence: 1.0 };
     const medium = scoreFinding(finding({ ...base, severity: "medium" }));
     const low = scoreFinding(finding({ ...base, severity: "low" }));
     expect(medium.score).toBeGreaterThan(low.score);
   });
 
-  it("low risk scores higher than high risk (inverse relationship)", () => {
-    const base = { severity: "high", confidence: 1.0 };
-    const lowRisk = scoreFinding(finding({ ...base, risk: "low" }));
-    const highRisk = scoreFinding(finding({ ...base, risk: "high" }));
-    expect(lowRisk.score).toBeGreaterThan(highRisk.score);
+  it("higher confidence scores higher than lower confidence at the same severity", () => {
+    const base = { severity: "high" };
+    const high = scoreFinding(finding({ ...base, confidence: 0.9 }));
+    const low = scoreFinding(finding({ ...base, confidence: 0.3 }));
+    expect(high.score).toBeGreaterThan(low.score);
   });
 
-  it("medium risk scores higher than high risk", () => {
-    const base = { severity: "high", confidence: 1.0 };
-    const medRisk = scoreFinding(finding({ ...base, risk: "medium" }));
-    const highRisk = scoreFinding(finding({ ...base, risk: "high" }));
-    expect(medRisk.score).toBeGreaterThan(highRisk.score);
+  it("defaults missing confidence to 1", () => {
+    const result = scoreFinding({ severity: "medium" });
+    // medium(2) * confidence(1) = 2
+    expect(result.score).toBe(2);
   });
 
   it("zero confidence produces zero score", () => {
-    const result = scoreFinding(finding({ confidence: 0, severity: "critical", risk: "low" }));
+    const result = scoreFinding(finding({ confidence: 0, severity: "critical" }));
     expect(result.score).toBe(0);
+  });
+
+  it("ignores legacy risk field", () => {
+    // Risk dimension was removed; presence of the field must not affect score.
+    const withRisk = scoreFinding(finding({ severity: "high", confidence: 1.0, risk: "high" }));
+    const withoutRisk = scoreFinding(finding({ severity: "high", confidence: 1.0 }));
+    expect(withRisk.score).toBe(withoutRisk.score);
   });
 });
 
 describe("scoreFindings", () => {
   it("returns an array of the same length", () => {
     const findings = [
-      finding({ severity: "low", confidence: 1.0, risk: "low" }),
-      finding({ severity: "critical", confidence: 1.0, risk: "low" }),
-      finding({ severity: "medium", confidence: 1.0, risk: "low" }),
+      finding({ severity: "low", confidence: 1.0 }),
+      finding({ severity: "critical", confidence: 1.0 }),
+      finding({ severity: "medium", confidence: 1.0 }),
     ];
     expect(scoreFindings(findings)).toHaveLength(findings.length);
   });
 
   it("sorts by score descending", () => {
     const findings = [
-      finding({ id: "1", severity: "low", confidence: 1.0, risk: "low" }),
-      finding({ id: "2", severity: "critical", confidence: 1.0, risk: "low" }),
-      finding({ id: "3", severity: "medium", confidence: 1.0, risk: "low" }),
+      finding({ id: "1", severity: "low", confidence: 1.0 }),
+      finding({ id: "2", severity: "critical", confidence: 1.0 }),
+      finding({ id: "3", severity: "medium", confidence: 1.0 }),
     ];
     const sorted = scoreFindings(findings);
     expect(sorted[0].id).toBe("2"); // critical
@@ -95,8 +100,8 @@ describe("scoreFindings", () => {
 
   it("all findings have a score field after sorting", () => {
     const findings = [
-      finding({ severity: "high", confidence: 0.5, risk: "medium" }),
-      finding({ severity: "low", confidence: 0.9, risk: "high" }),
+      finding({ severity: "high", confidence: 0.5 }),
+      finding({ severity: "low", confidence: 0.9 }),
     ];
     for (const f of scoreFindings(findings)) {
       expect(typeof f.score).toBe("number");

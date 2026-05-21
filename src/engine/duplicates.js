@@ -1,5 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { join, extname } from 'node:path';
+import { readFile } from "node:fs/promises";
+import { collectFiles } from "./files.js";
 
 // Rabin-Karp constants
 const RK_BASE = 31;
@@ -9,29 +9,86 @@ const RK_MOD = 1_000_000_007;
 const BIG_BASE = BigInt(RK_BASE);
 const BIG_MOD = BigInt(RK_MOD);
 
-// Language -> file extensions (same mapping as cross-ref)
-const LANGUAGE_EXTENSIONS = {
-  typescript: ['.ts', '.tsx', '.js', '.jsx'],
-  go: ['.go'],
-  python: ['.py'],
-  csharp: ['.cs'],
-  java: ['.java'],
-};
-
 // Keywords to preserve as-is during normalisation
 const KEYWORDS = new Set([
-  'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
-  'return', 'function', 'class', 'const', 'let', 'var', 'import', 'export',
-  'default', 'new', 'delete', 'typeof', 'instanceof', 'void', 'in', 'of',
-  'try', 'catch', 'finally', 'throw', 'async', 'await', 'yield',
-  'true', 'false', 'null', 'undefined', 'this', 'super', 'static',
-  'public', 'private', 'protected', 'interface', 'type', 'enum',
+  "if",
+  "else",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "case",
+  "break",
+  "continue",
+  "return",
+  "function",
+  "class",
+  "const",
+  "let",
+  "var",
+  "import",
+  "export",
+  "default",
+  "new",
+  "delete",
+  "typeof",
+  "instanceof",
+  "void",
+  "in",
+  "of",
+  "try",
+  "catch",
+  "finally",
+  "throw",
+  "async",
+  "await",
+  "yield",
+  "true",
+  "false",
+  "null",
+  "undefined",
+  "this",
+  "super",
+  "static",
+  "public",
+  "private",
+  "protected",
+  "interface",
+  "type",
+  "enum",
   // Go keywords
-  'func', 'go', 'defer', 'select', 'chan', 'map', 'range', 'struct',
-  'package', 'nil', 'make', 'len', 'cap', 'append', 'copy', 'close',
+  "func",
+  "go",
+  "defer",
+  "select",
+  "chan",
+  "map",
+  "range",
+  "struct",
+  "package",
+  "nil",
+  "make",
+  "len",
+  "cap",
+  "append",
+  "copy",
+  "close",
   // Python keywords
-  'def', 'pass', 'with', 'as', 'from', 'not', 'and', 'or', 'is',
-  'lambda', 'global', 'nonlocal', 'assert', 'del', 'raise',
+  "def",
+  "pass",
+  "with",
+  "as",
+  "from",
+  "not",
+  "and",
+  "or",
+  "is",
+  "lambda",
+  "global",
+  "nonlocal",
+  "assert",
+  "del",
+  "raise",
 ]);
 
 // Number literal patterns
@@ -61,30 +118,36 @@ function tokenizeWithPositions(content) {
     }
 
     // Line comments (// or #)
-    if (ch === '/' && content[i + 1] === '/') {
-      while (i < len && content[i] !== '\n') i++;
+    if (ch === "/" && content[i + 1] === "/") {
+      while (i < len && content[i] !== "\n") i++;
       continue;
     }
-    if (ch === '#') {
-      while (i < len && content[i] !== '\n') i++;
+    if (ch === "#") {
+      while (i < len && content[i] !== "\n") i++;
       continue;
     }
     // Block comments /* ... */
-    if (ch === '/' && content[i + 1] === '*') {
+    if (ch === "/" && content[i + 1] === "*") {
       i += 2;
-      while (i < len - 1 && !(content[i] === '*' && content[i + 1] === '/')) i++;
+      while (i < len - 1 && !(content[i] === "*" && content[i + 1] === "/")) i++;
       i += 2;
       continue;
     }
 
     // String literals: single, double, backtick
-    if (ch === '"' || ch === "'" || ch === '`') {
+    if (ch === '"' || ch === "'" || ch === "`") {
       const start = i;
       const quote = ch;
       i++;
       while (i < len) {
-        if (content[i] === '\\') { i += 2; continue; }
-        if (content[i] === quote) { i++; break; }
+        if (content[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (content[i] === quote) {
+          i++;
+          break;
+        }
         i++;
       }
       tokens.push({ token: STRING_SENTINEL, pos: start });
@@ -101,11 +164,19 @@ function tokenizeWithPositions(content) {
       continue;
     }
 
-    // Numeric literals
-    if (/\d/.test(ch) || (ch === '-' && /\d/.test(content[i + 1] ?? ''))) {
+    // Numeric literals. A leading `-` is part of the number only when it
+    // appears at the start of an expression — i.e. after an operator, an
+    // opening bracket, or whitespace — not after an identifier or closing
+    // bracket where it would actually be a subtraction operator.
+    const prevCh = i === 0 ? "" : content[i - 1];
+    const negativeNumber =
+      ch === "-" &&
+      /\d/.test(content[i + 1] ?? "") &&
+      (i === 0 || /[=(<>+\-*/,;:?&|![{]/.test(prevCh) || /\s/.test(prevCh));
+    if (/\d/.test(ch) || negativeNumber) {
       const start = i;
       let j = i;
-      if (ch === '-') j++;
+      if (ch === "-") j++;
       while (j < len && /[\dA-Fa-fxXbBoO.]/.test(content[j])) j++;
       tokens.push({ token: content.slice(i, j), pos: start });
       i = j;
@@ -146,9 +217,9 @@ export function tokenize(content) {
 export function normalizeTokens(tokens) {
   return tokens.map((tok) => {
     if (KEYWORDS.has(tok)) return tok;
-    if (tok === STRING_SENTINEL) return 'STR';
-    if (NUMBER_RE.test(tok)) return 'NUM';
-    if (/^[A-Za-z_$][\w$]*$/.test(tok)) return 'IDENT';
+    if (tok === STRING_SENTINEL) return "STR";
+    if (NUMBER_RE.test(tok)) return "NUM";
+    if (/^[A-Za-z_$][\w$]*$/.test(tok)) return "IDENT";
     return tok;
   });
 }
@@ -189,10 +260,13 @@ export function rollingHash(tokens, windowSize) {
   result.push({ hash: Number(hash), startIndex: 0, endIndex: windowSize - 1 });
 
   // Slide window: new_hash = (old_hash - leaving * base^(w-1)) * base + entering
-  for (let i = 1; i + windowSize - 1 < tokens.length; i++) {
+  // The loop condition `i + windowSize <= tokens.length` ensures we emit a
+  // window for the final valid position (previous `<` form was off-by-one and
+  // dropped the last window).
+  for (let i = 1; i + windowSize <= tokens.length; i++) {
     const leaving = tokenValue(tokens[i - 1]);
     const entering = tokenValue(tokens[i + windowSize - 1]);
-    hash = ((hash - leaving * basePow % BIG_MOD + BIG_MOD) * BIG_BASE + entering) % BIG_MOD;
+    hash = ((hash - ((leaving * basePow) % BIG_MOD) + BIG_MOD) * BIG_BASE + entering) % BIG_MOD;
     result.push({ hash: Number(hash), startIndex: i, endIndex: i + windowSize - 1 });
   }
 
@@ -200,12 +274,18 @@ export function rollingHash(tokens, windowSize) {
 }
 
 /**
- * Cross-file hash comparison. Returns candidate pairs where the same hash
- * appears in different files.
+ * Hash comparison across files. Returns candidate pairs where the same hash
+ * appears in two distinct hash entries. Cross-file pairs are always emitted;
+ * intra-file pairs are emitted only when the two windows are at least
+ * `windowSize` tokens apart (so overlapping windows over the same code are
+ * not reported as duplicates of themselves).
+ *
  * @param {Array<{file: string, hashes: Array<{hash: number, startIndex: number, endIndex: number}>}>} hashMaps
+ * @param {number} [windowSize=50] - Minimum index distance between two
+ *   intra-file windows for them to count as a duplicate pair.
  * @returns {Array<{fileA: string, fileB: string, startA: number, endA: number, startB: number, endB: number}>}
  */
-export function findMatches(hashMaps) {
+export function findMatches(hashMaps, windowSize = 50) {
   // hash -> [{file, startIndex, endIndex}]
   const table = new Map();
 
@@ -221,12 +301,15 @@ export function findMatches(hashMaps) {
 
   for (const entries of table.values()) {
     if (entries.length < 2) continue;
-    // Emit unique cross-file pairs
     for (let i = 0; i < entries.length; i++) {
       for (let j = i + 1; j < entries.length; j++) {
         const a = entries[i];
         const b = entries[j];
-        if (a.file === b.file) continue;
+        if (a.file === b.file) {
+          // Same-file pair: require non-overlapping windows so we don't
+          // report a window against itself or its neighbour.
+          if (Math.abs(a.startIndex - b.startIndex) < windowSize) continue;
+        }
         // Dedup by file pair + token positions
         const key = `${a.file}:${a.startIndex}-${b.file}:${b.startIndex}`;
         if (seen.has(key)) continue;
@@ -266,55 +349,6 @@ export function verifyMatch(tokensA, tokensB, startA, startB, windowSize) {
 }
 
 /**
- * Collect all source files under a directory.
- * @param {string} dir
- * @param {object} options
- * @param {string[]} [options.exclude]
- * @param {string[]} [options.languages]
- * @returns {Promise<string[]>}
- */
-async function collectFiles(dir, options = {}) {
-  const { exclude = [], languages } = options;
-  const allowedExts = languages
-    ? languages.flatMap((l) => LANGUAGE_EXTENSIONS[l] ?? [])
-    : Object.values(LANGUAGE_EXTENSIONS).flat();
-
-  const results = [];
-
-  async function walk(current) {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = join(current, entry.name);
-      const rel = full.slice(dir.length + 1);
-
-      const excluded = exclude.some((pattern) => {
-        const re = pattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*\*/g, '@@GLOBSTAR@@')
-          .replace(/\*/g, '[^/]*')
-          .replace(/@@GLOBSTAR@@/g, '.*');
-        return new RegExp(`^${re}$`).test(rel) || new RegExp(`^${re}$`).test(entry.name);
-      });
-      if (excluded) continue;
-
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && allowedExts.includes(extname(entry.name))) {
-        results.push(full);
-      }
-    }
-  }
-
-  await walk(dir);
-  return results;
-}
-
-/**
  * Map token index to line number in source content using exact character positions.
  * @param {string} content
  * @param {Array<{token: string, pos: number}>} tokenPositions - tokens with start char positions
@@ -324,18 +358,137 @@ async function collectFiles(dir, options = {}) {
 function tokenIndexToLine(content, tokenPositions, tokenIndex) {
   if (tokenIndex >= tokenPositions.length) return 0;
   const charPos = tokenPositions[tokenIndex].pos;
-  return content.slice(0, charPos).split('\n').length - 1;
+  return content.slice(0, charPos).split("\n").length - 1;
+}
+
+/**
+ * Group pairwise duplicate findings into clusters using union-find (disjoint sets).
+ * Two files/regions are in the same cluster if they share at least one duplicate pair.
+ * Each region is keyed by "file:startLine-endLine".
+ *
+ * @param {Array<{check: string, fileA: string, fileB: string, startLineA: number, endLineA: number, startLineB: number, endLineB: number, similarity: number, tokenCount: number}>} matches
+ * @returns {Array<{check: string, files: Array<{file: string, startLine: number, endLine: number}>, representativePair: {fileA: string, startLineA: number, endLineA: number, fileB: string, startLineB: number, endLineB: number}, memberCount: number, avgSimilarity: number, avgTokenCount: number}>}
+ */
+export function clusterDuplicates(matches) {
+  if (!matches || matches.length === 0) return [];
+
+  // Union-Find data structure
+  const parent = new Map();
+  const rank = new Map();
+
+  function find(x) {
+    if (!parent.has(x)) {
+      parent.set(x, x);
+      rank.set(x, 0);
+    }
+    if (parent.get(x) !== x) {
+      parent.set(x, find(parent.get(x))); // path compression
+    }
+    return parent.get(x);
+  }
+
+  function union(a, b) {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) return;
+    const rankA = rank.get(ra);
+    const rankB = rank.get(rb);
+    if (rankA < rankB) {
+      parent.set(ra, rb);
+    } else if (rankA > rankB) {
+      parent.set(rb, ra);
+    } else {
+      parent.set(rb, ra);
+      rank.set(ra, rankA + 1);
+    }
+  }
+
+  // Region metadata keyed by regionKey
+  const regionMeta = new Map();
+
+  function regionKey(file, startLine, endLine) {
+    return `${file}:${startLine}-${endLine}`;
+  }
+
+  // Build union-find from pairs
+  for (const m of matches) {
+    const keyA = regionKey(m.fileA, m.startLineA, m.endLineA);
+    const keyB = regionKey(m.fileB, m.startLineB, m.endLineB);
+    regionMeta.set(keyA, { file: m.fileA, startLine: m.startLineA, endLine: m.endLineA });
+    regionMeta.set(keyB, { file: m.fileB, startLine: m.startLineB, endLine: m.endLineB });
+    union(keyA, keyB);
+  }
+
+  // Group regions by their root
+  const groups = new Map();
+  for (const key of regionMeta.keys()) {
+    const root = find(key);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(key);
+  }
+
+  // Collect per-cluster similarity and token count from the original pairs
+  const clusterStats = new Map();
+  for (const m of matches) {
+    const root = find(regionKey(m.fileA, m.startLineA, m.endLineA));
+    if (!clusterStats.has(root)) clusterStats.set(root, { totalSim: 0, totalTokens: 0, count: 0 });
+    const stats = clusterStats.get(root);
+    stats.totalSim += m.similarity;
+    stats.totalTokens += m.tokenCount;
+    stats.count++;
+  }
+
+  // Build cluster findings
+  const clusters = [];
+  for (const [root, keys] of groups) {
+    if (keys.length < 2) continue; // single region, no cluster
+
+    const files = keys.map((k) => regionMeta.get(k));
+    const stats = clusterStats.get(root) || { totalSim: 0, totalTokens: 0, count: 1 };
+
+    // Pick the first pair that belongs to this cluster as representative
+    const repPair = matches.find(
+      (m) => find(regionKey(m.fileA, m.startLineA, m.endLineA)) === root,
+    );
+
+    clusters.push({
+      check: "duplicate-cluster",
+      files,
+      representativePair: repPair
+        ? {
+            fileA: repPair.fileA,
+            startLineA: repPair.startLineA,
+            endLineA: repPair.endLineA,
+            fileB: repPair.fileB,
+            startLineB: repPair.startLineB,
+            endLineB: repPair.endLineB,
+          }
+        : null,
+      memberCount: files.length,
+      avgSimilarity: Math.round((stats.totalSim / stats.count) * 100) / 100,
+      avgTokenCount: Math.round(stats.totalTokens / stats.count),
+    });
+  }
+
+  return clusters;
 }
 
 /**
  * Scan for duplicate code blocks using Rabin-Karp rolling hash.
+ *
+ * Returns an array of findings. Each finding has `check: 'duplicate'` (raw pair)
+ * or `check: 'duplicate-cluster'` (cluster summary). Raw pairs are always present;
+ * cluster summaries are appended when pairs can be grouped into clusters of 2+
+ * distinct regions. Callers that only care about raw pairs can filter by
+ * `check === 'duplicate'`.
+ *
  * @param {string} path - Directory to scan
  * @param {object} [options]
  * @param {number} [options.minTokens=50] - Minimum token window size
  * @param {number} [options.similarity=0.80] - Minimum similarity ratio
  * @param {string[]} [options.exclude]
  * @param {string[]} [options.languages]
- * @returns {Promise<Array<{check: string, fileA: string, fileB: string, startLineA: number, endLineA: number, startLineB: number, endLineB: number, similarity: number, tokenCount: number}>>}
+ * @returns {Promise<Array<{check: string, fileA?: string, fileB?: string, startLineA?: number, endLineA?: number, startLineB?: number, endLineB?: number, similarity?: number, tokenCount?: number, files?: Array, representativePair?: object, memberCount?: number, avgSimilarity?: number, avgTokenCount?: number}>>}
  */
 export async function scanDuplicates(path, options = {}) {
   const { minTokens = 50, similarity: minSimilarity = 0.8, exclude, languages } = options;
@@ -347,7 +500,7 @@ export async function scanDuplicates(path, options = {}) {
   for (const file of files) {
     let content;
     try {
-      content = await readFile(file, 'utf8');
+      content = await readFile(file, "utf8");
     } catch {
       continue;
     }
@@ -358,7 +511,7 @@ export async function scanDuplicates(path, options = {}) {
     fileTokenData.push({ file, content, tokenPositions, raw, normalised });
   }
 
-  if (fileTokenData.length < 2) return [];
+  if (fileTokenData.length < 1) return [];
 
   // Compute rolling hashes for each file
   const hashMaps = fileTokenData.map(({ file, normalised }) => ({
@@ -366,13 +519,14 @@ export async function scanDuplicates(path, options = {}) {
     hashes: rollingHash(normalised, minTokens),
   }));
 
-  // Find candidate pairs by hash collision
-  const candidates = findMatches(hashMaps);
+  // Find candidate pairs by hash collision. Pass minTokens so intra-file
+  // pairs require non-overlapping windows.
+  const candidates = findMatches(hashMaps, minTokens);
 
   const findings = [];
   const emitted = new Set();
 
-  for (const { fileA, fileB, startA, endA, startB, endB } of candidates) {
+  for (const { fileA, fileB, startA, startB } of candidates) {
     const dataA = fileTokenData.find((d) => d.file === fileA);
     const dataB = fileTokenData.find((d) => d.file === fileB);
     if (!dataA || !dataB) continue;
@@ -380,18 +534,33 @@ export async function scanDuplicates(path, options = {}) {
     const sim = verifyMatch(dataA.normalised, dataB.normalised, startA, startB, minTokens);
     if (sim < minSimilarity) continue;
 
-    // Dedup: same pair of files + overlapping regions
+    // Extend the match forward past the minimum window for as long as the
+    // normalised tokens still match exactly. This gives the finding the true
+    // duplicate extent instead of always reporting `minTokens`.
+    let extent = minTokens;
+    while (
+      startA + extent < dataA.normalised.length &&
+      startB + extent < dataB.normalised.length &&
+      dataA.normalised[startA + extent] === dataB.normalised[startB + extent]
+    ) {
+      extent++;
+    }
+
+    // Dedup: same pair of files + same start positions
     const key = `${fileA}|${fileB}|${startA}|${startB}`;
     if (emitted.has(key)) continue;
     emitted.add(key);
 
+    const extendedEndA = startA + extent - 1;
+    const extendedEndB = startB + extent - 1;
+
     const startLineA = tokenIndexToLine(dataA.content, dataA.tokenPositions, startA);
-    const endLineA = tokenIndexToLine(dataA.content, dataA.tokenPositions, endA);
+    const endLineA = tokenIndexToLine(dataA.content, dataA.tokenPositions, extendedEndA);
     const startLineB = tokenIndexToLine(dataB.content, dataB.tokenPositions, startB);
-    const endLineB = tokenIndexToLine(dataB.content, dataB.tokenPositions, endB);
+    const endLineB = tokenIndexToLine(dataB.content, dataB.tokenPositions, extendedEndB);
 
     findings.push({
-      check: 'duplicate',
+      check: "duplicate",
       fileA,
       fileB,
       startLineA,
@@ -399,9 +568,11 @@ export async function scanDuplicates(path, options = {}) {
       startLineB,
       endLineB,
       similarity: Math.round(sim * 100) / 100,
-      tokenCount: minTokens,
+      tokenCount: extent,
     });
   }
 
-  return findings;
+  // Cluster the raw pairs and append cluster summaries
+  const clusters = clusterDuplicates(findings);
+  return [...findings, ...clusters];
 }

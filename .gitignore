@@ -1,6 +1,7 @@
 node_modules/
 .lazy-dev/
 .lazy-refactor/
+.context-guardian/
 .serena/
 .idea/
 

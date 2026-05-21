@@ -1,9 +1,11 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   addFindings,
+  clearFindings,
+  computeSummary,
   generateFindingId,
   getFinding,
   getFindings,
@@ -11,6 +13,7 @@ import {
   loadFindings,
   saveFindings,
   updateFinding,
+  VALID_STATUSES,
 } from "./findings.js";
 
 // ---------------------------------------------------------------------------
@@ -64,9 +67,9 @@ describe("generateFindingId", () => {
     expect(generateFindingId(a)).not.toBe(generateFindingId(b));
   });
 
-  it("starts with 'f-' and has 10 chars total", () => {
+  it("starts with 'f-' and has 18 chars total", () => {
     const id = generateFindingId(makeFinding());
-    expect(id).toMatch(/^f-[0-9a-f]{8}$/);
+    expect(id).toMatch(/^f-[0-9a-f]{16}$/);
   });
 
   it("is stable across separate calls (pure function)", () => {
@@ -119,6 +122,52 @@ describe("saveFindings", () => {
     const loaded = await loadFindings(projectPath);
     expect(loaded).toEqual(state);
   });
+
+  it("does not leave a tmp file behind after a successful write", async () => {
+    const { readdir } = await import("node:fs/promises");
+    await saveFindings(projectPath, {
+      scanId: "s1",
+      path: "/repo",
+      findings: [],
+      summary: { totalFindings: 0 },
+    });
+    const stateDirContents = await readdir(join(projectPath, ".lazy-refactor"));
+    expect(stateDirContents).toContain("findings.json");
+    // No half-written .tmp.* files should remain
+    expect(stateDirContents.filter((n) => n.includes(".tmp."))).toHaveLength(0);
+  });
+});
+
+describe("stale lock recovery", () => {
+  it("acquires lock after the previous holder process is gone (stale)", async () => {
+    // Manually plant a lock file referencing a PID that almost certainly is not running.
+    const { writeFile, readFile, mkdir } = await import("node:fs/promises");
+    const stateDir = join(projectPath, ".lazy-refactor");
+    await mkdir(stateDir, { recursive: true });
+    // PID 1 will exist on Unix, so use a very high unlikely PID instead.
+    const stalePid = 2_147_483_640;
+    await writeFile(join(stateDir, "findings.lock"), String(stalePid), "utf8");
+
+    // addFindings should successfully acquire the lock by detecting the stale holder
+    await addFindings(
+      projectPath,
+      [makeFinding({ check: "stale-recovery" })],
+      "scan-stale",
+      "/repo",
+    );
+
+    const state = await loadFindings(projectPath);
+    expect(state.findings).toHaveLength(1);
+
+    // Lock file should be cleaned up after releaseLock
+    let lockStillThere = true;
+    try {
+      await readFile(join(stateDir, "findings.lock"), "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT") lockStillThere = false;
+    }
+    expect(lockStillThere).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -137,21 +186,32 @@ describe("addFindings", () => {
     expect(state.summary.bySeverity.high).toBe(1);
   });
 
-  it("replaces findings when same scanId is used", async () => {
-    await addFindings(projectPath, [makeFinding({ check: "a" })], "scan-1", "/repo");
-    await addFindings(projectPath, [makeFinding({ check: "b" })], "scan-1", "/repo");
+  it("deduplicates findings by ID across scans", async () => {
+    const f = makeFinding({ check: "a" });
+    await addFindings(projectPath, [f], "scan-1", "/repo");
+    await addFindings(projectPath, [f], "scan-2", "/repo");
 
     const state = await loadFindings(projectPath);
     expect(state.findings).toHaveLength(1);
-    expect(state.findings[0].check).toBe("b");
   });
 
-  it("appends findings when scanId differs", async () => {
+  it("merges new findings with different IDs", async () => {
     await addFindings(projectPath, [makeFinding({ check: "a" })], "scan-1", "/repo");
     await addFindings(projectPath, [makeFinding({ check: "b" })], "scan-2", "/repo");
 
     const state = await loadFindings(projectPath);
     expect(state.findings).toHaveLength(2);
+  });
+
+  it("preserves user-set status on dedup merge", async () => {
+    const f = { ...makeFinding({ check: "a" }), id: "f-dedup-test00001" };
+    await addFindings(projectPath, [f], "scan-1", "/repo");
+    await updateFinding(projectPath, "f-dedup-test00001", { status: "ignored" });
+
+    await addFindings(projectPath, [{ ...f, status: "open" }], "scan-2", "/repo");
+    const state = await loadFindings(projectPath);
+    expect(state.findings).toHaveLength(1);
+    expect(state.findings[0].status).toBe("ignored");
   });
 
   it("assigns generated ids to findings that lack one", async () => {
@@ -160,7 +220,7 @@ describe("addFindings", () => {
     await addFindings(projectPath, [f], "scan-1", "/repo");
 
     const state = await loadFindings(projectPath);
-    expect(state.findings[0].id).toMatch(/^f-[0-9a-f]{8}$/);
+    expect(state.findings[0].id).toMatch(/^f-[0-9a-f]{16}$/);
   });
 
   it("preserves existing id if provided", async () => {
@@ -211,10 +271,38 @@ describe("updateFinding", () => {
 describe("getFindings", () => {
   beforeEach(async () => {
     const findings = [
-      { ...makeFinding(), id: "f-00000001", severity: "critical", category: "security", language: "javascript", status: "open" },
-      { ...makeFinding(), id: "f-00000002", severity: "high", category: "security", language: "typescript", status: "open" },
-      { ...makeFinding(), id: "f-00000003", severity: "medium", category: "maintainability", language: "javascript", status: "fixed" },
-      { ...makeFinding(), id: "f-00000004", severity: "low", category: "style", language: "go", status: "ignored" },
+      {
+        ...makeFinding(),
+        id: "f-00000001",
+        severity: "critical",
+        category: "security",
+        language: "javascript",
+        status: "open",
+      },
+      {
+        ...makeFinding(),
+        id: "f-00000002",
+        severity: "high",
+        category: "security",
+        language: "typescript",
+        status: "open",
+      },
+      {
+        ...makeFinding(),
+        id: "f-00000003",
+        severity: "medium",
+        category: "maintainability",
+        language: "javascript",
+        status: "fixed",
+      },
+      {
+        ...makeFinding(),
+        id: "f-00000004",
+        severity: "low",
+        category: "style",
+        language: "go",
+        status: "ignored",
+      },
     ];
     await addFindings(projectPath, findings, "scan-1", "/repo");
   });
@@ -286,8 +374,20 @@ describe("getFinding", () => {
 describe("getSummary", () => {
   it("returns correct counts", async () => {
     const findings = [
-      { ...makeFinding(), id: "f-00000001", severity: "critical", category: "security", status: "open" },
-      { ...makeFinding(), id: "f-00000002", severity: "critical", category: "security", status: "fixed" },
+      {
+        ...makeFinding(),
+        id: "f-00000001",
+        severity: "critical",
+        category: "security",
+        status: "open",
+      },
+      {
+        ...makeFinding(),
+        id: "f-00000002",
+        severity: "critical",
+        category: "security",
+        status: "fixed",
+      },
       { ...makeFinding(), id: "f-00000003", severity: "medium", category: "style", status: "open" },
     ];
     await addFindings(projectPath, findings, "scan-1", "/repo");
@@ -308,5 +408,153 @@ describe("getSummary", () => {
     expect(summary.bySeverity).toEqual({});
     expect(summary.byCategory).toEqual({});
     expect(summary.byStatus).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearFindings
+// ---------------------------------------------------------------------------
+
+describe("clearFindings", () => {
+  it("clears all findings and resets state", async () => {
+    // Add some findings first
+    await addFindings(
+      projectPath,
+      [makeFinding({ check: "a" }), makeFinding({ check: "b", severity: "high" })],
+      "scan-1",
+      "/repo",
+    );
+
+    // Verify findings exist
+    let state = await loadFindings(projectPath);
+    expect(state.findings).toHaveLength(2);
+
+    // Clear
+    await clearFindings(projectPath);
+
+    // Verify everything is reset
+    state = await loadFindings(projectPath);
+    expect(state.scanId).toBeNull();
+    expect(state.path).toBeNull();
+    expect(state.findings).toEqual([]);
+    expect(state.summary.totalFindings).toBe(0);
+    expect(state.summary.bySeverity).toEqual({});
+    expect(state.summary.byCategory).toEqual({});
+    expect(state.summary.byStatus).toEqual({});
+  });
+
+  it("releases the lock after clearing so subsequent writes work", async () => {
+    await addFindings(projectPath, [makeFinding({ check: "before-clear" })], "scan-1", "/repo");
+    await clearFindings(projectPath);
+
+    // Should be able to add findings again without lock contention
+    await addFindings(projectPath, [makeFinding({ check: "after-clear" })], "scan-2", "/repo");
+    const state = await loadFindings(projectPath);
+    expect(state.findings).toHaveLength(1);
+    expect(state.findings[0].check).toBe("after-clear");
+  });
+
+  it("works correctly even when no findings existed", async () => {
+    // Clear on empty state should not error
+    await clearFindings(projectPath);
+    const state = await loadFindings(projectPath);
+    expect(state.findings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1: Stale finding pruning
+// ---------------------------------------------------------------------------
+
+describe("stale finding pruning", () => {
+  it("VALID_STATUSES includes 'stale'", () => {
+    expect(VALID_STATUSES).toContain("stale");
+  });
+
+  it("marks open findings not in new scan as stale", async () => {
+    const f1 = { ...makeFinding(), id: "f-stale-test001", check: "check-a" };
+    const f2 = { ...makeFinding(), id: "f-stale-test002", check: "check-b" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+
+    // Second scan only produces f1 — f2 should become stale
+    await addFindings(projectPath, [f1], "scan-2", "/repo");
+
+    const state = await loadFindings(projectPath);
+    const staleF = state.findings.find((f) => f.id === "f-stale-test002");
+    expect(staleF).toBeDefined();
+    expect(staleF.status).toBe("stale");
+
+    const activeF = state.findings.find((f) => f.id === "f-stale-test001");
+    expect(activeF.status).toBe("open");
+  });
+
+  it("does not mark non-open findings as stale", async () => {
+    const f1 = { ...makeFinding(), id: "f-stale-test003", check: "check-a" };
+    const f2 = { ...makeFinding(), id: "f-stale-test004", check: "check-b" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+
+    // User marks f2 as ignored
+    await updateFinding(projectPath, "f-stale-test004", { status: "ignored" });
+
+    // Second scan only produces f1 — f2 should stay ignored (not become stale)
+    await addFindings(projectPath, [f1], "scan-2", "/repo");
+
+    const state = await loadFindings(projectPath);
+    const f2State = state.findings.find((f) => f.id === "f-stale-test004");
+    expect(f2State.status).toBe("ignored");
+  });
+
+  it("stale findings are excluded from getFindings by default", async () => {
+    const f1 = { ...makeFinding(), id: "f-stale-test005", check: "check-a" };
+    const f2 = { ...makeFinding(), id: "f-stale-test006", check: "check-b" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+
+    // Second scan only produces f1
+    await addFindings(projectPath, [f1], "scan-2", "/repo");
+
+    const results = await getFindings(projectPath);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("f-stale-test005");
+  });
+
+  it("stale findings can be retrieved when explicitly filtering for stale status", async () => {
+    const f1 = { ...makeFinding(), id: "f-stale-test007", check: "check-a" };
+    const f2 = { ...makeFinding(), id: "f-stale-test008", check: "check-b" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+
+    // Second scan only produces f1
+    await addFindings(projectPath, [f1], "scan-2", "/repo");
+
+    const staleResults = await getFindings(projectPath, { status: "stale" });
+    expect(staleResults).toHaveLength(1);
+    expect(staleResults[0].id).toBe("f-stale-test008");
+  });
+
+  it("stale findings are excluded from getSummary counts", async () => {
+    const f1 = { ...makeFinding(), id: "f-stale-test009", check: "check-a", severity: "high" };
+    const f2 = { ...makeFinding(), id: "f-stale-test010", check: "check-b", severity: "low" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+
+    // Second scan only produces f1 — f2 becomes stale
+    await addFindings(projectPath, [f1], "scan-2", "/repo");
+
+    const summary = await getSummary(projectPath);
+    expect(summary.totalFindings).toBe(1);
+    expect(summary.bySeverity.high).toBe(1);
+    expect(summary.bySeverity.low).toBeUndefined();
+  });
+
+  it("computeSummary excludes stale findings", () => {
+    const findings = [
+      { ...makeFinding(), status: "open", severity: "high" },
+      { ...makeFinding(), status: "stale", severity: "low" },
+      { ...makeFinding(), status: "fixed", severity: "medium" },
+    ];
+    const summary = computeSummary(findings);
+    expect(summary.totalFindings).toBe(2);
+    expect(summary.bySeverity.high).toBe(1);
+    expect(summary.bySeverity.medium).toBe(1);
+    expect(summary.bySeverity.low).toBeUndefined();
+    expect(summary.byStatus.stale).toBeUndefined();
   });
 });
