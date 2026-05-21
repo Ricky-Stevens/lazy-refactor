@@ -73,6 +73,17 @@ Use these MCP tools to interact with the system:
    - Note any risks or trade-offs
    - Suggest the simplest approach when multiple solutions exist
 
+## Severity Calibration
+
+Use these definitions consistently. The key distinction: severity reflects **impact**, not effort to fix.
+
+- **Critical**: Security vulnerabilities, data loss, crashes, broken access control
+- **High**: Correctness bugs (wrong behavior, silently ignoring configuration, broken contracts between modules). If the code produces wrong results or silently drops user intent, it's high — even if nothing crashes.
+- **Medium**: Structural debt (god files, duplication over 50 lines), performance issues with measurable impact, missing error handling at system boundaries
+- **Low**: Minor duplication (under 50 lines), style inconsistencies, dead code, missing documentation, cosmetic issues
+
+A correctness bug is never "medium" just because it doesn't crash. Silent misconfiguration is high.
+
 ## Guidelines
 
 - Base your assessment on code inspection, not assumptions about intent

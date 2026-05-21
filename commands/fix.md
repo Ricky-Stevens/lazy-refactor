@@ -35,6 +35,7 @@ Apply fixes to code quality issues identified in scans, with test verification a
 2. **Confirm with the user** before making any changes:
    - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)
    - Print the total count, e.g. `3 finding(s) will be fixed.`
+   - Also fetch non-fixable open findings and, if any exist, show a summary line: `N non-fixable finding(s) skipped (use /lazy-refactor report to review). These require manual intervention.` List their IDs, severities, and one-line descriptions so the user knows what's being left behind.
    - Ask the user to confirm: `Proceed? [y/N]`
    - If the `--yes` flag was passed, skip the prompt and proceed automatically
    - If the user does not confirm, abort with no changes made

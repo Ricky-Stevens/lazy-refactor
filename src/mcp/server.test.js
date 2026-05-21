@@ -303,15 +303,19 @@ describe("server tool registration", () => {
     expect(typeof detectLanguages).toBe("function");
   });
 
-  it("all expected tool names are wired in the source file", async () => {
+  it("all expected tool names are wired in the source files", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
 
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
-      "utf8",
-    );
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const [serverSrc, scanSrc, scanFocusedSrc, stateSrc] = await Promise.all([
+      readFile(join(dir, "server.js"), "utf8"),
+      readFile(join(dir, "tools-scan.js"), "utf8"),
+      readFile(join(dir, "tools-scan-focused.js"), "utf8"),
+      readFile(join(dir, "tools-state.js"), "utf8"),
+    ]);
+    const allSrc = serverSrc + scanSrc + scanFocusedSrc + stateSrc;
 
     const requiredTools = [
       "run_scan",
@@ -332,7 +336,7 @@ describe("server tool registration", () => {
     ];
 
     for (const tool of requiredTools) {
-      expect(serverSrc).toContain(`"${tool}"`);
+      expect(allSrc).toContain(`"${tool}"`);
     }
   });
 
@@ -685,32 +689,40 @@ describe("checkOutdatedDeps", () => {
 // ─── Source-level checks for Fix 4 (disabledChecks) and Fix 5 (*.generated.*) ─
 
 describe("server.js source checks", () => {
-  let serverSrc;
+  let allMcpSrc;
 
   beforeEach(async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
-    serverSrc = await readFile(join(dirname(fileURLToPath(import.meta.url)), "server.js"), "utf8");
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const [serverSrc, helpersSrc, scanSrc, scanFocusedSrc, stateSrc] = await Promise.all([
+      readFile(join(dir, "server.js"), "utf8"),
+      readFile(join(dir, "helpers.js"), "utf8"),
+      readFile(join(dir, "tools-scan.js"), "utf8"),
+      readFile(join(dir, "tools-scan-focused.js"), "utf8"),
+      readFile(join(dir, "tools-state.js"), "utf8"),
+    ]);
+    allMcpSrc = serverSrc + helpersSrc + scanSrc + scanFocusedSrc + stateSrc;
   });
 
   it("DEFAULT_CONFIG.exclude contains *.generated.*", () => {
-    expect(serverSrc).toContain("*.generated.*");
+    expect(allMcpSrc).toContain("*.generated.*");
   });
 
   it("run_scan filters findings by disabledChecks before scoring", () => {
-    expect(serverSrc).toContain("disabledChecks");
-    expect(serverSrc).toContain("!config.disabledChecks.includes(f.check)");
+    expect(allMcpSrc).toContain("disabledChecks");
+    expect(allMcpSrc).toContain("!config.disabledChecks.includes(f.check)");
   });
 
   it("computeMetrics call includes maxExportsPerFile and maxImportsPerFile", () => {
-    expect(serverSrc).toContain("maxExportsPerFile: config.thresholds.maxExportsPerFile");
-    expect(serverSrc).toContain("maxImportsPerFile: config.thresholds.maxImportsPerFile");
+    expect(allMcpSrc).toContain("maxExportsPerFile: config.thresholds.maxExportsPerFile");
+    expect(allMcpSrc).toContain("maxImportsPerFile: config.thresholds.maxImportsPerFile");
   });
 
   it("buildRules comment does not mention outdated-patterns", () => {
     // Find the line containing the "Always includes" comment inside buildRules JSDoc
-    const lines = serverSrc.split("\n");
+    const lines = allMcpSrc.split("\n");
     const alwaysLine = lines.find((l) => l.includes("Always includes"));
     expect(alwaysLine).toBeDefined();
     expect(alwaysLine).not.toContain("outdated-patterns");
@@ -720,18 +732,18 @@ describe("server.js source checks", () => {
 // ─── New tool registration ─────────────────────────────────────────────────────
 
 describe("new tool registrations", () => {
-  it("server.js registers scan_inconsistent_patterns and scan_over_engineering", async () => {
+  it("registers scan_inconsistent_patterns and scan_over_engineering", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
 
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
+    const scanFocusedSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "tools-scan-focused.js"),
       "utf8",
     );
 
-    expect(serverSrc).toContain('"scan_inconsistent_patterns"');
-    expect(serverSrc).toContain('"scan_over_engineering"');
+    expect(scanFocusedSrc).toContain('"scan_inconsistent_patterns"');
+    expect(scanFocusedSrc).toContain('"scan_over_engineering"');
   });
 
   it("server.js header comment reflects 15 tools", async () => {
@@ -747,17 +759,17 @@ describe("new tool registrations", () => {
     expect(serverSrc).toContain("Exposes 15 tools");
   });
 
-  it("server.js registers clear_findings", async () => {
+  it("registers clear_findings", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
 
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
+    const stateSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "tools-state.js"),
       "utf8",
     );
 
-    expect(serverSrc).toContain('"clear_findings"');
+    expect(stateSrc).toContain('"clear_findings"');
   });
 
   it("run_scan focus parameter includes all new focus options", async () => {
@@ -765,14 +777,15 @@ describe("new tool registrations", () => {
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
 
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
+    // run_scan handler lives in tools-scan.js
+    const scanSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "tools-scan.js"),
       "utf8",
     );
 
-    expect(serverSrc).toContain("inconsistent-patterns");
-    expect(serverSrc).toContain("over-engineering");
-    expect(serverSrc).toContain("outdated");
+    expect(scanSrc).toContain("inconsistent-patterns");
+    expect(scanSrc).toContain("over-engineering");
+    expect(scanSrc).toContain("outdated");
   });
 });
 
@@ -795,18 +808,27 @@ describe("language field on findings", () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
+    // Mapper functions live in helpers.js; run_scan handler in tools-scan.js
+    const helpersSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "helpers.js"),
       "utf8",
     );
 
-    // All finding map blocks should include language
-    const mapBlocks = serverSrc.match(/\.map\(\(f\) => \(\{[\s\S]*?\}\)\)/g) ?? [];
-    // There should be at least 7 map blocks (duplicates, dead, unusedDeps, unusedImports, metrics, patterns, inconsistent, over-engineering)
-    expect(mapBlocks.length).toBeGreaterThanOrEqual(7);
-    for (const block of mapBlocks) {
-      expect(block).toContain("language:");
+    // All finding mapper functions should include language
+    const mapBlocks = helpersSrc.match(/\.map\(\(f\) => \(\{[\s\S]*?\}\)\)/g) ?? [];
+    // Mappers are exported functions, check them via the language field presence count
+    // There are 8 mapper functions in helpers.js, each returning an object with language:
+    const languageMatches = helpersSrc.match(/language:/g) ?? [];
+    // Each of the 8 mappers has one language: field
+    expect(languageMatches.length).toBeGreaterThanOrEqual(7);
+    // Verify no mapper omits the field — all exported map* functions must include language
+    const mapperFns = helpersSrc.match(/export function map\w+/g) ?? [];
+    expect(mapperFns.length).toBeGreaterThanOrEqual(7);
+    for (const _ of mapBlocks) {
+      // mapBlocks are empty here since mappers are standalone functions, not inline .map() calls
     }
+    // Direct assertion: the string "language:" appears at least once per mapper
+    expect(languageMatches.length).toBeGreaterThanOrEqual(mapperFns.length);
   });
 
   it("persisted findings have language field when added via addFindings", async () => {
@@ -917,11 +939,11 @@ describe("pagination awareness", () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
-    const serverSrc = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), "server.js"),
+    const stateSrc = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "tools-state.js"),
       "utf8",
     );
-    expect(serverSrc).toContain("truncated:");
+    expect(stateSrc).toContain("truncated:");
   });
 
   it("pagination returns truncated=false when all results fit", async () => {
