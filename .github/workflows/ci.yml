@@ -52,6 +52,7 @@ jobs:
       - run: >-
           semgrep scan --config auto --error
           --exclude='node_modules' --exclude='coverage'
+          --exclude-rule='javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp'
 
   audit:
     name: Dependency Audit

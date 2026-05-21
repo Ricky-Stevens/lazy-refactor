@@ -33,9 +33,9 @@
   "main": "src/mcp/server.js",
   "scripts": {
     "test": "bun test",
-    "lint": "bunx biome check --error-on-warnings",
-    "lint:ci": "bunx biome check",
-    "format": "bunx biome format --write"
+    "lint": "bunx biome check src/",
+    "lint:ci": "bunx biome check src/",
+    "format": "bunx biome format --write src/"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

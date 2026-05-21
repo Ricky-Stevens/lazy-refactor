@@ -647,7 +647,7 @@ export async function scanDeadCode(path, _rules = {}, options = {}) {
   const recentFiles = await getRecentlyAddedFiles(path, 30);
 
   const findings = [];
-  for (const { file, language, content, exports } of fileData) {
+  for (const { file, language, exports } of fileData) {
     // Skip entry points and test files
     if (isEntryPoint(file) || isTestFile(file)) continue;
 

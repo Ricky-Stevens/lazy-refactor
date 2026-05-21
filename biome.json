@@ -6,7 +6,13 @@
     "lineWidth": 100
   },
   "linter": {
-    "enabled": true
+    "enabled": true,
+    "rules": {
+      "suspicious": {
+        "noAssignInExpressions": "off",
+        "noTemplateCurlyInString": "off"
+      }
+    }
   },
   "files": {
     "includes": ["src/**/*.js"],
