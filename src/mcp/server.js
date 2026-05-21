@@ -22,7 +22,7 @@ const projectPath = process.cwd();
 
 const server = new McpServer({
   name: "lazy-refactor",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 registerRunScan(server, projectPath);
