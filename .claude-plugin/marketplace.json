@@ -9,7 +9,7 @@
       "name": "lazy-refactor",
       "source": "./",
       "description": "Deterministic code quality scanning + AI-powered fixes. Pattern matching, metrics, duplicate detection, dead code analysis across 5 languages.",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "author": {
         "name": "Ricky Stevens"
       },

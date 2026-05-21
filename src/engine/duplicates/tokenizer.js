@@ -87,6 +87,69 @@ export const NUMBER_RE = /^-?(?:0x[\da-fA-F]+|0b[01]+|0o[0-7]+|\d+(?:\.\d+)?(?:[
 export const STRING_SENTINEL = '"..."';
 
 /**
+ * Skip past a line comment (// or #), returning the new position.
+ * @param {string} content
+ * @param {number} i  position of the comment start character
+ * @param {number} len
+ * @returns {number}
+ */
+function skipLineComment(content, i, len) {
+  while (i < len && content[i] !== "\n") i++;
+  return i;
+}
+
+/**
+ * Skip past a block comment (/* ... *\/), returning the new position.
+ * @param {string} content
+ * @param {number} i  position just after the opening `/*`
+ * @param {number} len
+ * @returns {number}
+ */
+function skipBlockComment(content, i, len) {
+  while (i < len - 1 && !(content[i] === "*" && content[i + 1] === "/")) i++;
+  return i + 2;
+}
+
+/**
+ * Scan a quoted string literal, returning the position after the closing quote.
+ * @param {string} content
+ * @param {number} i  position of the opening quote character
+ * @param {number} len
+ * @param {string} quote  the quote character (" ' `)
+ * @returns {number}
+ */
+function scanStringLiteral(content, i, len, quote) {
+  i++; // skip opening quote
+  while (i < len) {
+    if (content[i] === "\\") {
+      i += 2; // skip escaped character
+      continue;
+    }
+    if (content[i] === quote) {
+      i++; // skip closing quote
+      break;
+    }
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Determine whether a `-` at position i should be treated as part of a
+ * negative numeric literal rather than a subtraction operator.
+ * @param {string} content
+ * @param {number} i
+ * @returns {boolean}
+ */
+function isNegativeNumberStart(content, i) {
+  if (content[i] !== "-") return false;
+  if (!/\d/.test(content[i + 1] ?? "")) return false;
+  if (i === 0) return true;
+  const prev = content[i - 1];
+  return /[=(<>+\-*/,;:?&|![{]/.test(prev) || /\s/.test(prev);
+}
+
+/**
  * Tokenize source content, returning tokens with their start character positions.
  * Internal implementation used by both tokenize() and scanDuplicates().
  * @param {string} content
@@ -101,45 +164,24 @@ export function tokenizeWithPositions(content) {
     const ch = content[i];
 
     // Skip whitespace
-    if (/\s/.test(ch)) {
-      i++;
+    if (/\s/.test(ch)) { i++; continue; }
+
+    // Line comments: // or #
+    if (ch === "#" || (ch === "/" && content[i + 1] === "/")) {
+      i = skipLineComment(content, i, len);
       continue;
     }
 
-    // Line comments (// or #)
-    if (ch === "/" && content[i + 1] === "/") {
-      while (i < len && content[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "#") {
-      while (i < len && content[i] !== "\n") i++;
-      continue;
-    }
-    // Block comments /* ... */
+    // Block comments: /* ... */
     if (ch === "/" && content[i + 1] === "*") {
-      i += 2;
-      while (i < len - 1 && !(content[i] === "*" && content[i + 1] === "/")) i++;
-      i += 2;
+      i = skipBlockComment(content, i + 2, len);
       continue;
     }
 
     // String literals: single, double, backtick
     if (ch === '"' || ch === "'" || ch === "`") {
-      const start = i;
-      const quote = ch;
-      i++;
-      while (i < len) {
-        if (content[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (content[i] === quote) {
-          i++;
-          break;
-        }
-        i++;
-      }
-      tokens.push({ token: STRING_SENTINEL, pos: start });
+      tokens.push({ token: STRING_SENTINEL, pos: i });
+      i = scanStringLiteral(content, i, len, ch);
       continue;
     }
 
@@ -148,26 +190,17 @@ export function tokenizeWithPositions(content) {
       const start = i;
       let j = i;
       while (j < len && /[\w$]/.test(content[j])) j++;
-      tokens.push({ token: content.slice(i, j), pos: start });
+      tokens.push({ token: content.slice(start, j), pos: start });
       i = j;
       continue;
     }
 
-    // Numeric literals. A leading `-` is part of the number only when it
-    // appears at the start of an expression — i.e. after an operator, an
-    // opening bracket, or whitespace — not after an identifier or closing
-    // bracket where it would actually be a subtraction operator.
-    const prevCh = i === 0 ? "" : content[i - 1];
-    const negativeNumber =
-      ch === "-" &&
-      /\d/.test(content[i + 1] ?? "") &&
-      (i === 0 || /[=(<>+\-*/,;:?&|![{]/.test(prevCh) || /\s/.test(prevCh));
-    if (/\d/.test(ch) || negativeNumber) {
+    // Numeric literals (including leading-minus negatives)
+    if (/\d/.test(ch) || isNegativeNumberStart(content, i)) {
       const start = i;
-      let j = i;
-      if (ch === "-") j++;
+      let j = ch === "-" ? i + 1 : i;
       while (j < len && /[\dA-Fa-fxXbBoO.]/.test(content[j])) j++;
-      tokens.push({ token: content.slice(i, j), pos: start });
+      tokens.push({ token: content.slice(start, j), pos: start });
       i = j;
       continue;
     }

@@ -9,7 +9,38 @@
 export function clusterDuplicates(matches) {
   if (!matches || matches.length === 0) return [];
 
-  // Union-Find data structure
+  const uf = makeUnionFind();
+
+  // Region metadata keyed by regionKey
+  const regionMeta = new Map();
+
+  // Build union-find from pairs
+  for (const m of matches) {
+    const keyA = regionKey(m.fileA, m.startLineA, m.endLineA);
+    const keyB = regionKey(m.fileB, m.startLineB, m.endLineB);
+    regionMeta.set(keyA, { file: m.fileA, startLine: m.startLineA, endLine: m.endLineA });
+    regionMeta.set(keyB, { file: m.fileB, startLine: m.startLineB, endLine: m.endLineB });
+    uf.union(keyA, keyB);
+  }
+
+  const groups = buildGroups(regionMeta, uf);
+  const clusterStats = collectStats(matches, uf);
+  return buildClusters(groups, regionMeta, clusterStats, matches, uf);
+}
+
+// ---------------------------------------------------------------------------
+// Region key helper
+// ---------------------------------------------------------------------------
+
+function regionKey(file, startLine, endLine) {
+  return `${file}:${startLine}-${endLine}`;
+}
+
+// ---------------------------------------------------------------------------
+// Union-Find factory
+// ---------------------------------------------------------------------------
+
+function makeUnionFind() {
   const parent = new Map();
   const rank = new Map();
 
@@ -40,42 +71,58 @@ export function clusterDuplicates(matches) {
     }
   }
 
-  // Region metadata keyed by regionKey
-  const regionMeta = new Map();
+  return { find, union };
+}
 
-  function regionKey(file, startLine, endLine) {
-    return `${file}:${startLine}-${endLine}`;
-  }
+// ---------------------------------------------------------------------------
+// Group and stats helpers
+// ---------------------------------------------------------------------------
 
-  // Build union-find from pairs
-  for (const m of matches) {
-    const keyA = regionKey(m.fileA, m.startLineA, m.endLineA);
-    const keyB = regionKey(m.fileB, m.startLineB, m.endLineB);
-    regionMeta.set(keyA, { file: m.fileA, startLine: m.startLineA, endLine: m.endLineA });
-    regionMeta.set(keyB, { file: m.fileB, startLine: m.startLineB, endLine: m.endLineB });
-    union(keyA, keyB);
-  }
-
-  // Group regions by their root
+/**
+ * Group region keys by their union-find root.
+ * @param {Map<string, object>} regionMeta
+ * @param {{find: function}} uf
+ * @returns {Map<string, string[]>}
+ */
+function buildGroups(regionMeta, uf) {
   const groups = new Map();
   for (const key of regionMeta.keys()) {
-    const root = find(key);
+    const root = uf.find(key);
     if (!groups.has(root)) groups.set(root, []);
     groups.get(root).push(key);
   }
+  return groups;
+}
 
-  // Collect per-cluster similarity and token count from the original pairs
+/**
+ * Collect per-cluster similarity and token-count stats.
+ * @param {object[]} matches
+ * @param {{find: function}} uf
+ * @returns {Map<string, {totalSim: number, totalTokens: number, count: number}>}
+ */
+function collectStats(matches, uf) {
   const clusterStats = new Map();
   for (const m of matches) {
-    const root = find(regionKey(m.fileA, m.startLineA, m.endLineA));
+    const root = uf.find(regionKey(m.fileA, m.startLineA, m.endLineA));
     if (!clusterStats.has(root)) clusterStats.set(root, { totalSim: 0, totalTokens: 0, count: 0 });
     const stats = clusterStats.get(root);
     stats.totalSim += m.similarity;
     stats.totalTokens += m.tokenCount;
     stats.count++;
   }
+  return clusterStats;
+}
 
-  // Build cluster findings
+/**
+ * Build the final cluster findings from grouped regions.
+ * @param {Map<string, string[]>} groups
+ * @param {Map<string, object>} regionMeta
+ * @param {Map<string, object>} clusterStats
+ * @param {object[]} matches
+ * @param {{find: function}} uf
+ * @returns {object[]}
+ */
+function buildClusters(groups, regionMeta, clusterStats, matches, uf) {
   const clusters = [];
   for (const [root, keys] of groups) {
     if (keys.length < 2) continue; // single region, no cluster
@@ -85,7 +132,7 @@ export function clusterDuplicates(matches) {
 
     // Pick the first pair that belongs to this cluster as representative
     const repPair = matches.find(
-      (m) => find(regionKey(m.fileA, m.startLineA, m.endLineA)) === root,
+      (m) => uf.find(regionKey(m.fileA, m.startLineA, m.endLineA)) === root,
     );
 
     clusters.push({
@@ -106,6 +153,5 @@ export function clusterDuplicates(matches) {
       avgTokenCount: Math.round(stats.totalTokens / stats.count),
     });
   }
-
   return clusters;
 }

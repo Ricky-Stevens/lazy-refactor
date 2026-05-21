@@ -4,5 +4,6 @@ node_modules/
 .context-guardian/
 .serena/
 .idea/
+.claude/
 
 CLAUDE.md

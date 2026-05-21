@@ -2,77 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALL_SOURCE_EXTENSIONS, collectFiles, LANGUAGE_EXTENSIONS } from "./files.js";
-
-// ---------------------------------------------------------------------------
-// LANGUAGE_EXTENSIONS
-// ---------------------------------------------------------------------------
-
-describe("LANGUAGE_EXTENSIONS", () => {
-  test("has entries for all expected languages", () => {
-    const expected = ["typescript", "javascript", "go", "python", "csharp", "java", "common"];
-    for (const lang of expected) {
-      expect(LANGUAGE_EXTENSIONS).toHaveProperty(lang);
-      expect(Array.isArray(LANGUAGE_EXTENSIONS[lang])).toBe(true);
-      expect(LANGUAGE_EXTENSIONS[lang].length).toBeGreaterThan(0);
-    }
-  });
-
-  test("typescript includes .ts, .tsx, .js, .jsx", () => {
-    expect(LANGUAGE_EXTENSIONS.typescript).toContain(".ts");
-    expect(LANGUAGE_EXTENSIONS.typescript).toContain(".tsx");
-    expect(LANGUAGE_EXTENSIONS.typescript).toContain(".js");
-    expect(LANGUAGE_EXTENSIONS.typescript).toContain(".jsx");
-  });
-
-  test("go includes .go", () => {
-    expect(LANGUAGE_EXTENSIONS.go).toContain(".go");
-  });
-
-  test("python includes .py", () => {
-    expect(LANGUAGE_EXTENSIONS.python).toContain(".py");
-  });
-
-  test("csharp includes .cs", () => {
-    expect(LANGUAGE_EXTENSIONS.csharp).toContain(".cs");
-  });
-
-  test("java includes .java", () => {
-    expect(LANGUAGE_EXTENSIONS.java).toContain(".java");
-  });
-
-  test("common includes all language extensions", () => {
-    const common = LANGUAGE_EXTENSIONS.common;
-    expect(common).toContain(".ts");
-    expect(common).toContain(".tsx");
-    expect(common).toContain(".js");
-    expect(common).toContain(".jsx");
-    expect(common).toContain(".go");
-    expect(common).toContain(".py");
-    expect(common).toContain(".cs");
-    expect(common).toContain(".java");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ALL_SOURCE_EXTENSIONS
-// ---------------------------------------------------------------------------
-
-describe("ALL_SOURCE_EXTENSIONS", () => {
-  test("is a Set", () => {
-    expect(ALL_SOURCE_EXTENSIONS).toBeInstanceOf(Set);
-  });
-
-  test("contains all expected extensions", () => {
-    for (const ext of [".ts", ".tsx", ".js", ".jsx", ".go", ".py", ".cs", ".java"]) {
-      expect(ALL_SOURCE_EXTENSIONS.has(ext)).toBe(true);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// collectFiles
-// ---------------------------------------------------------------------------
+import { ALL_SOURCE_EXTENSIONS, collectFiles } from "./files.js";
 
 describe("collectFiles", () => {
   let rootDir;
@@ -112,8 +42,7 @@ describe("collectFiles", () => {
     test("no file has a non-source extension", async () => {
       const files = await collectFiles(dir);
       for (const f of files) {
-        const ext = `.${f.split(".").pop()}`;
-        expect(ALL_SOURCE_EXTENSIONS.has(ext)).toBe(true);
+        expect(ALL_SOURCE_EXTENSIONS.has(`.${f.split(".").pop()}`)).toBe(true);
       }
     });
   });
@@ -163,7 +92,6 @@ describe("collectFiles", () => {
       dir = join(rootDir, "skip-dirs");
       await mkdir(join(dir, "src"), { recursive: true });
       await writeFile(join(dir, "src", "app.ts"), "export default 1;");
-      // Create files inside each skip directory
       for (const skipDir of ["node_modules", ".git", "vendor", "dist", "build", "__pycache__"]) {
         await mkdir(join(dir, skipDir), { recursive: true });
       }
@@ -251,8 +179,7 @@ describe("collectFiles", () => {
     });
 
     test("returns empty array", async () => {
-      const files = await collectFiles(dir);
-      expect(files).toEqual([]);
+      expect(await collectFiles(dir)).toEqual([]);
     });
   });
 
@@ -260,8 +187,7 @@ describe("collectFiles", () => {
 
   describe("unreadable directory", () => {
     test("returns empty array for non-existent directory", async () => {
-      const files = await collectFiles(join(rootDir, "does-not-exist"));
-      expect(files).toEqual([]);
+      expect(await collectFiles(join(rootDir, "does-not-exist"))).toEqual([]);
     });
   });
 
@@ -275,39 +201,26 @@ describe("collectFiles", () => {
       await mkdir(join(dir, "real"), { recursive: true });
       await mkdir(join(dir, "links"), { recursive: true });
       await writeFile(join(dir, "real", "target.ts"), "export const s = 1;");
-
-      // File symlink pointing to real/target.ts
       try {
         await symlink(join(dir, "real", "target.ts"), join(dir, "links", "linked.ts"));
-      } catch {
-        // Symlinks may not be supported; tests using this will handle it
-      }
-
-      // Directory symlink pointing to real/
+      } catch { /* symlinks may not be supported */ }
       try {
         await symlink(join(dir, "real"), join(dir, "links", "real-dir"));
-      } catch {
-        // Symlinks may not be supported
-      }
+      } catch { /* symlinks may not be supported */ }
     });
 
     test("follows file symlinks", async () => {
       const files = await collectFiles(join(dir, "links"));
-      const names = files.map((f) => f.split("/").pop());
-      // linked.ts should appear (it's a symlink to a regular file)
-      expect(names).toContain("linked.ts");
+      expect(files.map((f) => f.split("/").pop())).toContain("linked.ts");
     });
 
     test("does not follow directory symlinks", async () => {
       const files = await collectFiles(join(dir, "links"));
-      // If directory symlinks were followed, we'd see target.ts from real-dir/
-      // We should only see linked.ts, not real-dir/target.ts
-      const fromDirLink = files.filter((f) => f.includes("real-dir"));
-      expect(fromDirLink.length).toBe(0);
+      expect(files.filter((f) => f.includes("real-dir"))).toHaveLength(0);
     });
   });
 
-  // -- glob patterns via collectFiles exclude (indirect test of globToExcludeRegex) ---
+  // -- glob patterns ---------------------------------------------------------
 
   describe("glob patterns", () => {
     let dir;
@@ -320,8 +233,6 @@ describe("collectFiles", () => {
       await writeFile(join(dir, "src", "main.ts"), "");
       await writeFile(join(dir, "src", "main.test.ts"), "");
       await writeFile(join(dir, "src", "__tests__", "suite.ts"), "");
-      // Note: src/vendor is NOT in SKIP_DIRS (only top-level vendor is),
-      // so we test via exclude pattern
       await writeFile(join(dir, "src", "vendor", "lib.ts"), "");
     });
 

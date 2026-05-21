@@ -47,6 +47,15 @@ export function globToRegex(pattern) {
   // Now walk character-by-character. The `(`, `)`, and `|` produced by the
   // brace expansion above must pass through untouched; every other char is
   // either a glob wildcard or a literal we escape.
+  return new RegExp(`^${buildRegexString(expanded)}$`);
+}
+
+/**
+ * Build a regex string from an already-brace-expanded glob pattern.
+ * @param {string} expanded
+ * @returns {string}
+ */
+function buildRegexString(expanded) {
   let regStr = "";
   let i = 0;
   while (i < expanded.length) {
@@ -71,7 +80,35 @@ export function globToRegex(pattern) {
       i++;
     }
   }
-  return new RegExp(`^${regStr}$`);
+  return regStr;
+}
+
+/**
+ * Determine whether a file path matches any of the exclude patterns.
+ * @param {string[]} excludePatterns
+ * @param {string} rel - relative path from the scan root
+ * @param {string} name - bare filename
+ * @returns {boolean}
+ */
+function isExcluded(excludePatterns, rel, name) {
+  return excludePatterns.some((pattern) => {
+    const rx = globToRegex(pattern);
+    return rx.test(rel) || rx.test(name);
+  });
+}
+
+/**
+ * Follow a symlink and push the target path if it resolves to a regular file.
+ * @param {string} full - absolute path of the symlink
+ * @param {string[]} results
+ */
+async function pushSymlinkIfFile(full, results) {
+  try {
+    const target = await stat(full);
+    if (target.isFile()) results.push(full);
+  } catch {
+    // Broken symlink — skip silently.
+  }
 }
 
 /**
@@ -105,11 +142,7 @@ export async function collectFiles(dir, options = {}) {
       const full = join(current, entry.name);
       const rel = full.slice(dir.length + 1);
 
-      const excluded = exclude.some((pattern) => {
-        const rx = globToRegex(pattern);
-        return rx.test(rel) || rx.test(entry.name);
-      });
-      if (excluded) continue;
+      if (isExcluded(exclude, rel, entry.name)) continue;
 
       if (entry.isDirectory()) {
         await walk(full);
@@ -118,12 +151,7 @@ export async function collectFiles(dir, options = {}) {
       } else if (entry.isSymbolicLink() && allowedExts.includes(extname(entry.name))) {
         // Follow symlinks only when they resolve to a regular file. We do not
         // follow directory symlinks because they can introduce cycles.
-        try {
-          const target = await stat(full);
-          if (target.isFile()) results.push(full);
-        } catch {
-          // Broken symlink — skip silently.
-        }
+        await pushSymlinkIfFile(full, results);
       }
     }
   }

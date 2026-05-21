@@ -53,6 +53,69 @@ const approachPatterns = {
 };
 
 /**
+ * Strip comments and string/regex literals so concern-keyword and approach
+ * detection don't fire on pattern definitions or documentation.
+ * Not a full parser — good enough to drop the obvious false-positives.
+ * @param {string} content
+ * @returns {string}
+ */
+function stripNoise(content) {
+  return content
+    // Block and line comments, hash comments (Python/Ruby)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+    .replace(/^\s*#[^\n]*/gm, "")
+    // String literals (template, double-quoted, single-quoted)
+    .replace(/`[^`]*`/g, '""')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    // Regex literals (preceded by operator/punctuation/whitespace)
+    .replace(/(?<=[=({[,;!&|?:\s])\/[^/\n]+\/[gimsuy]*/g, '""');
+}
+
+/**
+ * Return the approach patterns (from approachPatterns[concern]) that match
+ * within a stripped file body.
+ * @param {string} concern
+ * @param {string} stripped
+ * @returns {string[]} matched pattern labels
+ */
+function matchedApproaches(concern, stripped) {
+  const matched = [];
+  for (const { pattern, re, preFilter } of approachPatterns[concern] ?? []) {
+    if (preFilter && !preFilter(stripped)) continue;
+    if (re.test(stripped)) matched.push(pattern);
+  }
+  return matched;
+}
+
+/**
+ * Read a file, strip noise, and return matched approaches for the given concern.
+ * Returns null if the file cannot be read or doesn't mention the concern keywords.
+ * @param {string} file
+ * @param {string} concern
+ * @param {string[]} keywords
+ * @returns {Promise<string[]|null>}
+ */
+async function fileApproaches(file, concern, keywords) {
+  let content;
+  try {
+    content = await readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+
+  const stripped = stripNoise(content);
+
+  // Only care about files that mention at least one concern keyword (word-boundary to avoid
+  // substring false-positives like "log" matching "dialog" or "catalog")
+  const hasConcern = keywords.some((kw) => new RegExp(`\\b${kw}\\b`).test(stripped));
+  if (!hasConcern) return null;
+
+  return matchedApproaches(concern, stripped);
+}
+
+/**
  * Scan for inconsistent coding patterns across concerns.
  * Flags concerns where 3+ different approaches are found across the codebase.
  * @param {string} path - Directory to scan
@@ -65,7 +128,6 @@ export async function scanInconsistentPatterns(path, options = {}) {
   const files = await collectFiles(path, options);
   const findings = [];
 
-  // Categorise files by concern keywords, then by approach
   for (const [concern, keywords] of Object.entries(CONCERN_KEYWORDS)) {
     // Map approach pattern label -> list of files using it
     const approachFiles = {};
@@ -75,31 +137,10 @@ export async function scanInconsistentPatterns(path, options = {}) {
 
     for (const file of files) {
       if (isTestFile(file)) continue;
-      let content;
-      try {
-        content = await readFile(file, "utf8");
-      } catch {
-        continue;
-      }
-
-      // Strip line and block comments so concern-keyword and approach detection
-      // don't fire on prose in JSDoc / // explanations. Not a full parser — good
-      // enough to drop the obvious false-positives.
-      const stripped = content
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-        .replace(/^\s*#[^\n]*/gm, "");
-
-      // Only care about files that mention at least one concern keyword (word-boundary to avoid
-      // substring false-positives like "log" matching "dialog" or "catalog")
-      const hasConcern = keywords.some((kw) => new RegExp(`\\b${kw}\\b`).test(stripped));
-      if (!hasConcern) continue;
-
-      for (const { pattern, re, preFilter } of approachPatterns[concern] ?? []) {
-        if (preFilter && !preFilter(stripped)) continue;
-        if (re.test(stripped)) {
-          approachFiles[pattern].push(file);
-        }
+      const approaches = await fileApproaches(file, concern, keywords);
+      if (!approaches) continue;
+      for (const pattern of approaches) {
+        approachFiles[pattern].push(file);
       }
     }
 

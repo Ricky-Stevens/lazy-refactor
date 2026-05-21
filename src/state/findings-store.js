@@ -8,44 +8,43 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-export const DIR_NAME = ".lazy-refactor";
-export const FILE_NAME = "findings.json";
-export const LOCK_FILE = "findings.lock";
-export const LOCK_TIMEOUT_MS = 10_000;
-export const LOCK_RETRY_MS = 50;
+const DIR_NAME = ".lazy-refactor";
+const FILE_NAME = "findings.json";
+const LOCK_FILE = "findings.lock";
+const LOCK_TIMEOUT_MS = 10_000;
+const LOCK_RETRY_MS = 50;
 
-/**
- * Resolve the path to findings.json for the given project.
- *
- * @param {string} projectPath
- * @returns {string}
- */
-export function findingsPath(projectPath) {
+function findingsPath(projectPath) {
   return join(projectPath, DIR_NAME, FILE_NAME);
 }
 
-/**
- * Resolve the path to the lock file for the given project.
- *
- * @param {string} projectPath
- * @returns {string}
- */
-export function lockPath(projectPath) {
+function lockPath(projectPath) {
   return join(projectPath, DIR_NAME, LOCK_FILE);
 }
 
-/**
- * Check whether a process with the given PID is currently running.
- *
- * @param {number} pid
- * @returns {boolean}
- */
-export function isProcessRunning(pid) {
+function isProcessRunning(pid) {
   try {
     process.kill(pid, 0);
     return true;
   } catch {
     return false;
+  }
+}
+
+// Attempt to remove a stale lock file. Errors are silenced — a concurrent
+// process may have already cleaned it up, which is fine.
+async function tryRemoveStaleLock(lock) {
+  try {
+    const pid = Number.parseInt(await readFile(lock, "utf8"), 10);
+    if (pid && !isProcessRunning(pid)) {
+      try {
+        await unlink(lock);
+      } catch {
+        // Another process may have already cleaned it
+      }
+    }
+  } catch {
+    // Lock file disappeared between check and read — retry will handle it
   }
 }
 
@@ -67,23 +66,7 @@ export async function acquireLock(projectPath) {
       return;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      // Check for stale lock (pid no longer running)
-      try {
-        const pid = Number.parseInt(await readFile(lock, "utf8"), 10);
-        if (pid && !isProcessRunning(pid)) {
-          // Stale lock — try to remove and re-acquire atomically
-          try {
-            await unlink(lock);
-          } catch {
-            // Another process may have already cleaned it
-          }
-          // Retry the exclusive create on the next loop iteration
-          continue;
-        }
-      } catch {
-        // Lock file disappeared between check and read — retry
-        continue;
-      }
+      await tryRemoveStaleLock(lock);
       await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
     }
   }

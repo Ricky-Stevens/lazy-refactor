@@ -6,6 +6,6 @@ export { detectLanguage, isEntryPoint, isTestFile } from "./cross-ref/classify.j
 export { ENTRY_POINT_NAMES, TEST_FILE_PATTERNS } from "./cross-ref/constants.js";
 export { extractExports } from "./cross-ref/extract-exports.js";
 export { extractImports } from "./cross-ref/extract-imports.js";
-export { getRecentlyAddedFiles, scanDeadCode } from "./cross-ref/scan-dead-code.js";
-export { detectManifest, scanUnusedDeps } from "./cross-ref/scan-unused-deps.js";
+export { scanDeadCode } from "./cross-ref/scan-dead-code.js";
+export { scanUnusedDeps } from "./cross-ref/scan-unused-deps.js";
 export { scanUnusedImports } from "./cross-ref/scan-unused-imports.js";

@@ -2,92 +2,106 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectFiles } from "../files.js";
 
-/**
- * Detect and parse the package manifest file in a directory.
- * Returns { type, deps } where deps is an array of dependency names.
- * @param {string} dir
- * @returns {Promise<{type: string, deps: string[]}|null>}
- */
-export async function detectManifest(dir) {
-  // Aggregate across every manifest we can find — polyglot repos (e.g. a Go
-  // backend alongside a Node.js frontend) need all dependencies considered,
-  // not just whichever file we happened to try first.
-  let type = null;
-  const deps = [];
+// --- Per-manifest parsers ---
+// Each returns an array of dependency names, or null if the manifest is absent.
 
-  // package.json
+async function readNpmDeps(dir) {
   try {
     const pkgJson = await readFile(join(dir, "package.json"), "utf8");
     const pkg = JSON.parse(pkgJson);
-    type = type ?? "npm";
-    deps.push(
+    return [
       ...Object.keys(pkg.dependencies ?? {}),
       ...Object.keys(pkg.devDependencies ?? {}),
       ...Object.keys(pkg.peerDependencies ?? {}),
-    );
+    ];
   } catch {
-    // not found or parse error
+    return null;
   }
+}
 
-  // go.mod
+async function readGoDeps(dir) {
   try {
     const goMod = await readFile(join(dir, "go.mod"), "utf8");
-    type = type ?? "go";
+    const deps = [];
     for (const line of goMod.split("\n")) {
       const m = line.trim().match(/^([a-zA-Z][^\s]+)\s+v[\d.]/);
       if (m) deps.push(m[1].split("/").pop());
     }
+    return deps;
   } catch {
-    // not found
+    return null;
   }
+}
 
-  // requirements.txt
+async function readPythonDeps(dir) {
   try {
     const req = await readFile(join(dir, "requirements.txt"), "utf8");
-    type = type ?? "python";
-    deps.push(
-      ...req
-        .split("\n")
-        .map((l) =>
-          l
-            .trim()
-            .split(/[>=<!]/)[0]
-            .trim(),
-        )
-        .filter(Boolean),
-    );
+    return req
+      .split("\n")
+      .map((l) => l.trim().split(/[>=<!]/)[0].trim())
+      .filter(Boolean);
   } catch {
-    // not found
+    return null;
   }
+}
 
-  // *.csproj — basic heuristic
+async function readCsharpDeps(dir) {
   try {
     const entries = await readdir(dir);
     const csproj = entries.find((e) => e.endsWith(".csproj"));
-    if (csproj) {
-      const xml = await readFile(join(dir, csproj), "utf8");
-      type = type ?? "csharp";
-      for (const m of xml.matchAll(/<PackageReference\s+Include="([^"]+)"/g)) {
-        deps.push(m[1]);
-      }
-    }
+    if (!csproj) return null;
+    const xml = await readFile(join(dir, csproj), "utf8");
+    return [...xml.matchAll(/<PackageReference\s+Include="([^"]+)"/g)].map((m) => m[1]);
   } catch {
-    // not found
+    return null;
   }
+}
 
-  // pom.xml
+async function readJavaDeps(dir) {
   try {
     const pom = await readFile(join(dir, "pom.xml"), "utf8");
-    type = type ?? "java";
-    for (const m of pom.matchAll(/<artifactId>([^<]+)<\/artifactId>/g)) {
-      deps.push(m[1]);
-    }
+    return [...pom.matchAll(/<artifactId>([^<]+)<\/artifactId>/g)].map((m) => m[1]);
   } catch {
-    // not found
+    return null;
   }
+}
 
-  if (deps.length === 0 && type === null) return null;
-  return { type: type ?? "unknown", deps };
+/**
+ * Detect and parse all package manifests in a directory.
+ * Returns { type, deps } where deps is an aggregated array of dependency names.
+ * Aggregates across every manifest found so polyglot repos are fully covered.
+ * @param {string} dir
+ * @returns {Promise<{type: string, deps: string[]}|null>}
+ */
+async function detectManifest(dir) {
+  const [npm, go, python, csharp, java] = await Promise.all([
+    readNpmDeps(dir),
+    readGoDeps(dir),
+    readPythonDeps(dir),
+    readCsharpDeps(dir),
+    readJavaDeps(dir),
+  ]);
+
+  const deps = [
+    ...(npm ?? []),
+    ...(go ?? []),
+    ...(python ?? []),
+    ...(csharp ?? []),
+    ...(java ?? []),
+  ];
+
+  if (deps.length === 0) return null;
+
+  // Use the first detected ecosystem as the manifest type label.
+  const type =
+    npm != null ? "npm" :
+    go != null ? "go" :
+    python != null ? "python" :
+    csharp != null ? "csharp" :
+    java != null ? "java" :
+    "unknown";
+
+  return { type, deps };
 }
 
 /**
@@ -103,7 +117,7 @@ export async function scanUnusedDeps(path, options = {}) {
 
   const files = await collectFiles(path, options);
 
-  // Build combined content from all source files for grep-style check
+  // Build combined source content for grep-style presence checks.
   const contents = [];
   for (const file of files) {
     try {
@@ -117,15 +131,10 @@ export async function scanUnusedDeps(path, options = {}) {
   const findings = [];
   for (const dep of manifest.deps) {
     // Word-boundary check avoids false-negatives where a dep name (e.g. "lodash")
-    // appears as a substring of an unrelated identifier (e.g. "lodash-es" in
-    // another dep's metadata, or "fooexpress" in source).
+    // appears as a substring of an unrelated identifier (e.g. "lodash-es").
     const escaped = dep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (!new RegExp(`\\b${escaped}\\b`).test(combined)) {
-      findings.push({
-        check: "unused-dep",
-        dep,
-        manifest: manifest.type,
-      });
+      findings.push({ check: "unused-dep", dep, manifest: manifest.type });
     }
   }
 

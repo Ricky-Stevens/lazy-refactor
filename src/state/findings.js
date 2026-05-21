@@ -9,7 +9,11 @@
  *   summary: { totalFindings, bySeverity, byCategory, byStatus }
  * }
  *
- * Finding statuses: 'open' | 'fixed' | 'ignored' | 'in-progress' | 'false-positive'
+ * Finding statuses: 'open' | 'fixed' | 'ignored' | 'in-progress' | 'false-positive' | 'stale'
+ *
+ * Dedup invariant: addFindings merges by ID. User-set statuses and notes are
+ * preserved across repeated scans. Findings absent from the latest scan are
+ * marked stale if they were previously open.
  */
 
 import { createHash } from "node:crypto";
@@ -26,13 +30,10 @@ export const VALID_STATUSES = [
   "stale",
 ];
 
-/**
- * Deterministic ID from finding content.
- * Uses: check + file (first location) + startLine (first location) + description.
- *
- * @param {object} finding
- * @returns {string}
- */
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
 export function generateFindingId(finding) {
   const location = finding.locations?.[0] ?? {};
   const raw = `${finding.check ?? ""}:${location.file ?? ""}:${location.startLine ?? ""}:${finding.description ?? ""}`;
@@ -40,18 +41,12 @@ export function generateFindingId(finding) {
   return `f-${digest.slice(0, 16)}`;
 }
 
-/**
- * Compute summary statistics from a findings array.
- *
- * @param {object[]} findings
- * @returns {{ totalFindings: number, bySeverity: object, byCategory: object, byStatus: object }}
- */
 export function computeSummary(findings) {
   const bySeverity = {};
   const byCategory = {};
   const byStatus = {};
 
-  // Exclude stale findings from summary counts
+  // Stale findings are excluded from summary counts
   const active = findings.filter((f) => (f.status ?? "open") !== "stale");
 
   for (const f of active) {
@@ -64,62 +59,60 @@ export function computeSummary(findings) {
   return { totalFindings: active.length, bySeverity, byCategory, byStatus };
 }
 
+/** Assign IDs and default status to incoming raw findings. */
+function stampFindings(findings) {
+  return findings.map((f) => ({
+    status: "open",
+    ...f,
+    id: f.id ?? generateFindingId(f),
+  }));
+}
+
 /**
- * Merge new findings into existing state with deduplication by ID.
- *
- * New findings with the same ID as existing ones replace the existing entry
- * (preserving user-set status/notes if the new finding doesn't override them).
- * Recomputes summary before saving.
- *
- * @param {string} projectPath
- * @param {object[]} newFindings
- * @param {string | null} scanId
- * @param {string | null} scanPath
- * @returns {Promise<void>}
+ * Merge stamped findings into an existing ID→finding map.
+ * Preserves non-open status and notes set by the user.
  */
+function mergeById(existingById, stamped) {
+  for (const f of stamped) {
+    const existing = existingById.get(f.id);
+    if (!existing) {
+      existingById.set(f.id, f);
+      continue;
+    }
+    existingById.set(f.id, {
+      ...f,
+      status: existing.status !== "open" ? existing.status : f.status,
+      notes: existing.notes ?? f.notes,
+    });
+  }
+}
+
+/**
+ * Mark previously-open findings that did not appear in this scan as stale.
+ * Findings with user-set statuses (fixed, ignored, etc.) are left alone.
+ */
+function markStale(existingById, newIds) {
+  for (const [id, f] of existingById) {
+    if (!newIds.has(id) && (f.status ?? "open") === "open") {
+      existingById.set(id, { ...f, status: "stale" });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Exported state mutators
+// ---------------------------------------------------------------------------
+
 export async function addFindings(projectPath, newFindings, scanId, scanPath) {
   await acquireLock(projectPath);
   try {
     const state = await loadFindings(projectPath);
+    const stamped = stampFindings(newFindings);
+    const newIds = new Set(stamped.map((f) => f.id));
 
-    const stamped = newFindings.map((f) => ({
-      status: "open",
-      ...f,
-      id: f.id ?? generateFindingId(f),
-    }));
-
-    // Build a map of existing findings by ID for dedup
-    const existingById = new Map();
-    for (const f of state.findings) {
-      existingById.set(f.id, f);
-    }
-
-    // Build a set of new finding IDs for stale detection
-    const newIds = new Set();
-    for (const f of stamped) {
-      newIds.add(f.id);
-    }
-
-    // Merge: new findings replace existing ones by ID, preserve user status/notes
-    for (const f of stamped) {
-      const existing = existingById.get(f.id);
-      if (existing) {
-        existingById.set(f.id, {
-          ...f,
-          status: existing.status !== "open" ? existing.status : f.status,
-          notes: existing.notes ?? f.notes,
-        });
-      } else {
-        existingById.set(f.id, f);
-      }
-    }
-
-    // Mark existing open findings that are not in the new scan as stale
-    for (const [id, f] of existingById) {
-      if (!newIds.has(id) && (f.status ?? "open") === "open") {
-        existingById.set(id, { ...f, status: "stale" });
-      }
-    }
+    const existingById = new Map(state.findings.map((f) => [f.id, f]));
+    mergeById(existingById, stamped);
+    markStale(existingById, newIds);
 
     state.findings = [...existingById.values()];
     state.scanId = scanId ?? state.scanId;
@@ -132,12 +125,6 @@ export async function addFindings(projectPath, newFindings, scanId, scanPath) {
   }
 }
 
-/**
- * Clear all findings and reset scan state, with proper advisory locking.
- *
- * @param {string} projectPath
- * @returns {Promise<void>}
- */
 export async function clearFindings(projectPath) {
   await acquireLock(projectPath);
   try {
@@ -152,14 +139,6 @@ export async function clearFindings(projectPath) {
   }
 }
 
-/**
- * Update status and/or notes on a finding by id.
- *
- * @param {string} projectPath
- * @param {string} findingId
- * @param {{ status?: string, notes?: string }} updates
- * @returns {Promise<object | null>}
- */
 export async function updateFinding(projectPath, findingId, updates) {
   await acquireLock(projectPath);
   try {
@@ -180,24 +159,25 @@ export async function updateFinding(projectPath, findingId, updates) {
 /**
  * Return findings filtered by severity, category, status, and/or language.
  * Each filter value may be a string or array of strings.
+ * Stale findings are excluded unless status filter explicitly includes 'stale'.
  *
  * @param {string} projectPath
  * @param {{ severity?: string|string[], category?: string|string[], status?: string|string[], language?: string|string[] }} [filter]
- * @returns {Promise<object[]>}
  */
 export async function getFindings(projectPath, filter = {}) {
   const state = await loadFindings(projectPath);
 
   const match = (value, filterValue) => {
-    if (filterValue === undefined || filterValue === null) return true;
+    if (filterValue == null) return true;
     const allowed = Array.isArray(filterValue) ? filterValue : [filterValue];
     return allowed.includes(value);
   };
 
+  const excludeStale = filter.status === undefined;
+
   return state.findings.filter((f) => {
     const status = f.status ?? "open";
-    // Exclude stale findings by default unless explicitly filtering for stale
-    if (status === "stale" && filter.status === undefined) return false;
+    if (excludeStale && status === "stale") return false;
     return (
       match(f.severity, filter.severity) &&
       match(f.category, filter.category) &&
@@ -207,24 +187,11 @@ export async function getFindings(projectPath, filter = {}) {
   });
 }
 
-/**
- * Return a single finding by id, or null if not found.
- *
- * @param {string} projectPath
- * @param {string} findingId
- * @returns {Promise<object | null>}
- */
 export async function getFinding(projectPath, findingId) {
   const state = await loadFindings(projectPath);
   return state.findings.find((f) => f.id === findingId) ?? null;
 }
 
-/**
- * Return summary statistics for the project's findings.
- *
- * @param {string} projectPath
- * @returns {Promise<{ totalFindings: number, bySeverity: object, byCategory: object, byStatus: object }>}
- */
 export async function getSummary(projectPath) {
   const state = await loadFindings(projectPath);
   return computeSummary(state.findings);

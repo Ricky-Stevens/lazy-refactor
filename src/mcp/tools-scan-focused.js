@@ -15,6 +15,30 @@ import { scanInconsistentPatterns, scanOverEngineering } from "../engine/pattern
 import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 
 /**
+ * Resolve scan path, config, and detected languages in one call.
+ * @param {string} scanPath
+ * @param {string} projectPath
+ * @returns {{ resolvedPath: string, config: object, langs: string[] }}
+ */
+async function resolveScanContext(scanPath, projectPath) {
+  const resolvedPath = await validateScanPath(scanPath);
+  const config = await readConfig(projectPath);
+  const detected = await detectLanguages(resolvedPath);
+  return { resolvedPath, config, langs: detected.languages };
+}
+
+/**
+ * Filter rules to the given categories. Returns all rules if categories is empty/absent.
+ * @param {object[]} rules
+ * @param {string[]|undefined} categories
+ * @returns {object[]}
+ */
+function filterRulesByCategory(rules, categories) {
+  if (!categories || categories.length === 0) return rules;
+  return rules.filter((r) => categories.includes(r.category));
+}
+
+/**
  * Register the 7 focused scan tools on the given McpServer instance.
  * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
  * @param {string} projectPath
@@ -58,10 +82,7 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const detected = await detectLanguages(resolvedPath);
-        const langs = detected.languages;
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
         const [dead, unusedDeps, unusedImports] = await Promise.all([
           scanDeadCode(resolvedPath, {}, { exclude: config.exclude, languages: langs }),
           scanUnusedDeps(resolvedPath, { exclude: config.exclude }),
@@ -92,13 +113,11 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath, thresholds }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const detected = await detectLanguages(resolvedPath);
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
         const mergedThresholds = { ...config.thresholds, ...(thresholds ?? {}) };
         const result = await computeMetrics(resolvedPath, {
           ...mergedThresholds,
-          languages: detected.languages,
+          languages: langs,
           exclude: config.exclude,
         });
         return ok(result);
@@ -120,17 +139,11 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath, categories }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const detected = await detectLanguages(resolvedPath);
-        const rules = buildRules(detected.languages);
-        const filtered =
-          categories && categories.length > 0
-            ? rules.filter((r) => categories.includes(r.category))
-            : rules;
-        const findings = await scanPatterns(resolvedPath, filtered, {
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
+        const rules = filterRulesByCategory(buildRules(langs), categories);
+        const findings = await scanPatterns(resolvedPath, rules, {
           exclude: config.exclude,
-          languages: detected.languages,
+          languages: langs,
         });
         return ok(findings);
       } catch (err) {
@@ -150,12 +163,10 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const detected = await detectLanguages(resolvedPath);
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
         const findings = await scanInconsistentPatterns(resolvedPath, {
           exclude: config.exclude,
-          languages: detected.languages,
+          languages: langs,
         });
         return ok(findings);
       } catch (err) {
@@ -175,12 +186,10 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const detected = await detectLanguages(resolvedPath);
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
         const findings = await scanOverEngineering(resolvedPath, {
           exclude: config.exclude,
-          languages: detected.languages,
+          languages: langs,
         });
         return ok(findings);
       } catch (err) {

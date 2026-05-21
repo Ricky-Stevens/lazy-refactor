@@ -48,6 +48,87 @@ function extractExtensions(filePattern) {
 }
 
 /**
+ * Build find(1) arguments for a given file pattern and exclude list.
+ * @param {string[]} exts
+ * @param {string[]} excludes
+ * @returns {string[]}
+ */
+function buildFindArgs(exts, excludes) {
+  const args = ["."];
+  args.push("(");
+  for (let i = 0; i < exts.length; i++) {
+    if (i > 0) args.push("-o");
+    args.push("-name", `*.${exts[i]}`);
+  }
+  args.push(")");
+
+  for (const e of excludes) {
+    if (e.includes("*.")) {
+      const stripped = e.replace(/^\*\*\//, "");
+      args.push("-not", "-name", stripped);
+    } else {
+      const dir = e.replace(/^\*\*\//, "").replace(/\/\*\*$/, "");
+      args.push("-not", "-path", `*/${dir}`, "-not", "-path", `*/${dir}/*`);
+    }
+  }
+  args.push("-type", "f");
+  return args;
+}
+
+/**
+ * Enumerate files matching a pattern using find(1).
+ * Uses execFileSync with argument arrays to prevent shell injection.
+ * @param {string} filePattern
+ * @param {string[]} excludes
+ * @param {string} cwd
+ * @returns {string[]} Matched file paths
+ */
+function enumerateFilesWithGrep(filePattern, excludes, cwd) {
+  const exts = extractExtensions(filePattern);
+  let raw;
+  try {
+    raw = execFileSync("find", buildFindArgs(exts, excludes), {
+      cwd,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      maxBuffer: 50 * 1024 * 1024,
+    }).trim();
+  } catch {
+    return [];
+  }
+  return raw ? raw.split("\n").filter(Boolean) : [];
+}
+
+/**
+ * Run grep over file list in chunks to stay under ARG_MAX.
+ * Uses execFileSync with argument arrays to prevent shell injection.
+ * @param {string} pattern
+ * @param {string[]} files
+ * @param {string} cwd
+ * @returns {string}
+ */
+function grepChunked(pattern, files, cwd) {
+  const CHUNK_SIZE = 5000;
+  let output = "";
+  for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+    const chunk = files.slice(i, i + CHUNK_SIZE);
+    try {
+      // -H forces filename prefix even when chunk has a single file, so parseLine works.
+      output += execFileSync("grep", ["-HPn", pattern, ...chunk], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+        maxBuffer: 50 * 1024 * 1024,
+      });
+    } catch (err) {
+      // grep exits 1 when no matches found in a chunk — preserve any stdout already produced.
+      if (err.stdout) output += err.stdout;
+    }
+  }
+  return output;
+}
+
+/**
  * Run a pattern search using ripgrep or grep, returning raw output.
  * Uses execFileSync with argument arrays to prevent shell injection.
  * @param {string} pattern       PCRE2 regex
@@ -72,65 +153,10 @@ export function runPatternSearch(pattern, filePattern, excludes, useRipgrep, cwd
     });
   }
 
-  // grep fallback: use find to enumerate files, then grep on the file list
-  const exts = extractExtensions(filePattern);
-
-  const findArgs = ["."];
-  // Add name filters: ( -name '*.ts' -o -name '*.tsx' )
-  findArgs.push("(");
-  for (let i = 0; i < exts.length; i++) {
-    if (i > 0) findArgs.push("-o");
-    findArgs.push("-name", `*.${exts[i]}`);
-  }
-  findArgs.push(")");
-
-  // Add exclude filters
-  for (const e of excludes) {
-    if (e.includes("*.")) {
-      const stripped = e.replace(/^\*\*\//, "");
-      findArgs.push("-not", "-name", stripped);
-    } else {
-      const dir = e.replace(/^\*\*\//, "").replace(/\/\*\*$/, "");
-      findArgs.push("-not", "-path", `*/${dir}`, "-not", "-path", `*/${dir}/*`);
-    }
-  }
-  findArgs.push("-type", "f");
-
-  let fileList;
-  try {
-    fileList = execFileSync("find", findArgs, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "ignore"],
-      maxBuffer: 50 * 1024 * 1024,
-    }).trim();
-  } catch {
-    return "";
-  }
-
-  if (!fileList) return "";
-  const files = fileList.split("\n").filter(Boolean);
+  // grep fallback: enumerate files with find then grep in chunks
+  const files = enumerateFilesWithGrep(filePattern, excludes, cwd);
   if (files.length === 0) return "";
-
-  // Chunk file list to stay under ARG_MAX on large repos (50k+ files).
-  const CHUNK_SIZE = 5000;
-  let output = "";
-  for (let i = 0; i < files.length; i += CHUNK_SIZE) {
-    const chunk = files.slice(i, i + CHUNK_SIZE);
-    try {
-      // -H forces filename prefix even when chunk has a single file, so parseLine works.
-      output += execFileSync("grep", ["-HPn", pattern, ...chunk], {
-        cwd,
-        encoding: "utf8",
-        stdio: ["pipe", "pipe", "ignore"],
-        maxBuffer: 50 * 1024 * 1024,
-      });
-    } catch (err) {
-      // grep exits 1 when no matches found in a chunk — preserve any stdout already produced.
-      if (err.stdout) output += err.stdout;
-    }
-  }
-  return output;
+  return grepChunked(pattern, files, cwd);
 }
 
 /**
@@ -171,39 +197,54 @@ function fileMatchesAntiPattern(filePath, antiPattern, useRipgrep) {
 }
 
 /**
+ * Build the set of files that should be excluded due to matching the antiPattern.
+ * @param {string|null} antiPattern
+ * @param {string[]} lines
+ * @param {string} basePath
+ * @param {boolean} useRipgrep
+ * @returns {Set<string>}
+ */
+function buildAntiPatternExclusions(antiPattern, lines, basePath, useRipgrep) {
+  if (!antiPattern) return new Set();
+  const hitFiles = new Set(lines.map((l) => parseLine(l)?.file).filter(Boolean));
+  const excluded = new Set();
+  for (const file of hitFiles) {
+    if (fileMatchesAntiPattern(`${basePath}/${file}`, antiPattern, useRipgrep)) {
+      excluded.add(file);
+    }
+  }
+  return excluded;
+}
+
+/**
+ * Resolve raw output for a rule, handling exit-code errors from rg/grep.
+ * @param {object} rule
+ * @param {string[]} allExcludes
+ * @param {boolean} useRipgrep
+ * @param {string} path
+ * @returns {string|null} raw output, or null to skip this rule
+ */
+function resolveRawOutput(rule, allExcludes, useRipgrep, path) {
+  try {
+    return runPatternSearch(rule.pattern, rule.filePattern, allExcludes, useRipgrep, path);
+  } catch (err) {
+    if (err.status === 1) return "";
+    if (err.stdout) return err.stdout;
+    return null;
+  }
+}
+
+/**
  * Scan a directory for pattern matches according to the given rules.
  *
  * @param {string} path   Directory path to scan
- * @param {Array<{
- *   id: string,
- *   severity: string,
- *   category: string,
- *   description: string,
- *   language: string,
- *   pattern: string,
- *   antiPattern: string|null,
- *   filePattern: string,
- *   exclude: string[],
- *   suggestion: string,
- *   fixable: boolean
- * }>} rules
+ * @param {Array<object>} rules
  * @param {{exclude?: string[], languages?: string[]}} [options]
- * @returns {Promise<Array<{
- *   ruleId: string,
- *   file: string,
- *   line: number,
- *   match: string,
- *   severity: string,
- *   category: string,
- *   description: string,
- *   suggestion: string,
- *   fixable: boolean
- * }>>}
+ * @returns {Promise<Array<object>>}
  */
 export async function scanPatterns(path, rules, options = {}) {
   const { exclude: extraExcludes = [], languages = [] } = options;
   const useRipgrep = await isRipgrepAvailable();
-
   const findings = [];
 
   for (const rule of rules) {
@@ -213,37 +254,20 @@ export async function scanPatterns(path, rules, options = {}) {
     }
 
     const allExcludes = [...(rule.exclude || []), ...extraExcludes];
-
-    let rawOutput = "";
-    try {
-      rawOutput = runPatternSearch(rule.pattern, rule.filePattern, allExcludes, useRipgrep, path);
-    } catch (err) {
-      if (err.status === 1) {
-        rawOutput = "";
-      } else if (err.stdout) {
-        rawOutput = err.stdout;
-      } else {
-        continue;
-      }
-    }
+    const rawOutput = resolveRawOutput(rule, allExcludes, useRipgrep, path);
+    if (rawOutput === null) continue;
 
     const lines = rawOutput.split("\n").filter(Boolean);
-
-    const antiPatternExcludedFiles = new Set();
-    if (rule.antiPattern) {
-      const hitFiles = new Set(lines.map((l) => parseLine(l)?.file).filter(Boolean));
-      for (const file of hitFiles) {
-        const absFilePath = `${path}/${file}`;
-        if (fileMatchesAntiPattern(absFilePath, rule.antiPattern, useRipgrep)) {
-          antiPatternExcludedFiles.add(file);
-        }
-      }
-    }
+    const antiPatternExcludedFiles = buildAntiPatternExclusions(
+      rule.antiPattern,
+      lines,
+      path,
+      useRipgrep,
+    );
 
     for (const line of lines) {
       const parsed = parseLine(line);
       if (!parsed) continue;
-
       if (extraExcludes.length > 0 && isExcluded(parsed.file, extraExcludes)) continue;
       if (antiPatternExcludedFiles.has(parsed.file)) continue;
 
