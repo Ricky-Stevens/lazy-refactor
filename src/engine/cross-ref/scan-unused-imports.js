@@ -53,12 +53,17 @@ function findUnusedNamedSymbols(bracesContent, lines, importLine, file, checkedS
 /**
  * Scan a TypeScript/JavaScript file for unused imports.
  * Uses local alias for usage checking (scanUnusedImports semantics).
+ *
+ * Two-pass strategy:
+ *  Pass 1: handles mixed default+named and plain default imports (single-line only).
+ *  Pass 2: handles named import blocks via regex — covers both single-line and multi-line
+ *          forms including "import type { ... }". Skips already-checked symbols.
  */
 function scanTypeScript(lines, file) {
   const findings = [];
   const checkedSymbols = new Set();
 
-  // Single-line pass
+  // Pass 1: mixed default+named and plain default imports
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
@@ -66,13 +71,6 @@ function scanTypeScript(lines, file) {
     const mixed = line.match(/^import\s+\w+\s*,\s*\{([^}]+)\}\s+from/);
     if (mixed) {
       findings.push(...findUnusedNamedSymbols(mixed[1], lines, i, file, checkedSymbols));
-      continue;
-    }
-
-    // Named: import { foo, bar as b } from '...'
-    const named = line.match(/^import\s+\{([^}]+)\}\s+from/);
-    if (named) {
-      findings.push(...findUnusedNamedSymbols(named[1], lines, i, file, checkedSymbols));
       continue;
     }
 
@@ -87,7 +85,7 @@ function scanTypeScript(lines, file) {
     }
   }
 
-  // Multi-line import blocks: import {\n  foo,\n  bar,\n} from '...'
+  // Pass 2: named import blocks (single-line or multi-line, including import type)
   const content = lines.join("\n");
   const multiLineRe = /import\s+(?:type\s+)?\{([^}]+)\}\s+from/g;
   let mlMatch;
@@ -140,18 +138,18 @@ function scanGo(lines, file) {
 
 /**
  * Parse a Go import line and return the local alias.
+ * Block form:  `alias "path"` or `"path"`.
+ * Inline form: `import alias "path"` or `import "path"`.
  * @param {string} trimmedLine
  * @param {boolean} inImportBlock
  * @returns {string|null}
  */
 function parseGoImportAlias(trimmedLine, inImportBlock) {
-  if (inImportBlock) {
-    const m = trimmedLine.match(/^(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"([^"]+)"/);
-    if (m) return m[1] ?? m[2].split("/").pop();
-  } else {
-    const m = trimmedLine.match(/^import\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"([^"]+)"/);
-    if (m) return m[1] ?? m[2].split("/").pop();
-  }
+  const re = inImportBlock
+    ? /^(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"([^"]+)"/
+    : /^import\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"([^"]+)"/;
+  const m = trimmedLine.match(re);
+  if (m) return m[1] ?? m[2].split("/").pop();
   return null;
 }
 
@@ -205,6 +203,14 @@ function scanJava(lines, file) {
 // the namespace are actually referenced. Checking the last segment causes
 // false positives (e.g. "Generic" never appears in code that uses List<T>).
 
+/** Per-language scanner dispatch map. C# is intentionally absent (see note above). */
+const LANGUAGE_SCANNERS = {
+  typescript: scanTypeScript,
+  go: scanGo,
+  python: scanPython,
+  java: scanJava,
+};
+
 /**
  * Scan for unused imports within individual files.
  * @param {string} path - Directory to scan
@@ -222,6 +228,9 @@ export async function scanUnusedImports(path, options = {}) {
     const language = detectLanguage(file);
     if (!language) continue;
 
+    const scanFn = LANGUAGE_SCANNERS[language];
+    if (!scanFn) continue;
+
     let content;
     try {
       content = await readFile(file, "utf8");
@@ -230,11 +239,7 @@ export async function scanUnusedImports(path, options = {}) {
     }
 
     const lines = content.split("\n");
-
-    if (language === "typescript") findings.push(...scanTypeScript(lines, file));
-    if (language === "go") findings.push(...scanGo(lines, file));
-    if (language === "python") findings.push(...scanPython(lines, file));
-    if (language === "java") findings.push(...scanJava(lines, file));
+    findings.push(...scanFn(lines, file));
   }
 
   return findings;

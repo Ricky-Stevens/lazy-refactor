@@ -38,11 +38,21 @@ function filterRulesByCategory(rules, categories) {
   return rules.filter((r) => categories.includes(r.category));
 }
 
-/**
- * Register the 7 focused scan tools on the given McpServer instance.
- * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
- * @param {string} projectPath
- */
+function registerSimpleScanTool(server, projectPath, name, description, scanFn) {
+  server.registerTool(
+    name,
+    { description, inputSchema: z.object({ path: z.string().describe("Directory to scan") }) },
+    async ({ path: scanPath }) => {
+      try {
+        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
+        return ok(await scanFn(resolvedPath, { exclude: config.exclude, languages: langs }));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+}
+
 export function registerFocusedScanTools(server, projectPath) {
   server.registerTool(
     "scan_duplicates",
@@ -164,50 +174,20 @@ export function registerFocusedScanTools(server, projectPath) {
     },
   );
 
-  server.registerTool(
+  registerSimpleScanTool(
+    server,
+    projectPath,
     "scan_inconsistent_patterns",
-    {
-      description:
-        "Scan for inconsistent coding patterns across the codebase (Check 10). Returns raw results without persisting. Use run_scan to persist findings.",
-      inputSchema: z.object({
-        path: z.string().describe("Directory to scan"),
-      }),
-    },
-    async ({ path: scanPath }) => {
-      try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
-        const findings = await scanInconsistentPatterns(resolvedPath, {
-          exclude: config.exclude,
-          languages: langs,
-        });
-        return ok(findings);
-      } catch (err) {
-        return fail(err);
-      }
-    },
+    "Scan for inconsistent coding patterns across the codebase (Check 10). Returns raw results without persisting. Use run_scan to persist findings.",
+    scanInconsistentPatterns,
   );
 
-  server.registerTool(
+  registerSimpleScanTool(
+    server,
+    projectPath,
     "scan_over_engineering",
-    {
-      description:
-        "Scan for over-engineered abstractions and unnecessary complexity (Check 13). Returns raw results without persisting. Use run_scan to persist findings.",
-      inputSchema: z.object({
-        path: z.string().describe("Directory to scan"),
-      }),
-    },
-    async ({ path: scanPath }) => {
-      try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
-        const findings = await scanOverEngineering(resolvedPath, {
-          exclude: config.exclude,
-          languages: langs,
-        });
-        return ok(findings);
-      } catch (err) {
-        return fail(err);
-      }
-    },
+    "Scan for over-engineered abstractions and unnecessary complexity (Check 13). Returns raw results without persisting. Use run_scan to persist findings.",
+    scanOverEngineering,
   );
 
   server.registerTool(

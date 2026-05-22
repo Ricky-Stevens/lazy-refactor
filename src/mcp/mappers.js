@@ -142,35 +142,34 @@ export function mapPattern(f) {
   };
 }
 
-export function mapInconsistent(f, resolvedPath) {
-  return {
-    check: f.check ?? "inconsistent-pattern",
-    severity: f.severity ?? "low",
-    category: f.category ?? "consistency",
+function makeMapper(defaults) {
+  return (f, resolvedPath) => ({
+    check: f.check ?? defaults.check,
+    severity: f.severity ?? defaults.severity,
+    category: f.category ?? defaults.category,
     locations:
       f.locations ??
       (f.file ? [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line ?? 1 }] : []),
     description: f.description,
-    suggestion:
-      f.suggestion ?? "Align with the predominant pattern used elsewhere in the codebase.",
+    suggestion: f.suggestion ?? defaults.suggestion,
     fixable: f.fixable ?? true,
-    confidence: f.confidence ?? 0.75,
+    confidence: f.confidence ?? defaults.confidence,
     language: f.language ?? "common",
-  };
+  });
 }
 
-export function mapOverEngineering(f, resolvedPath) {
-  return {
-    check: f.check ?? "over-engineering",
-    severity: f.severity ?? "low",
-    category: f.category ?? "complexity",
-    locations:
-      f.locations ??
-      (f.file ? [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line ?? 1 }] : []),
-    description: f.description,
-    suggestion: f.suggestion ?? "Simplify to the minimum viable abstraction.",
-    fixable: f.fixable ?? true,
-    confidence: f.confidence ?? 0.7,
-    language: f.language ?? "common",
-  };
-}
+export const mapInconsistent = makeMapper({
+  check: "inconsistent-pattern",
+  severity: "low",
+  category: "consistency",
+  suggestion: "Align with the predominant pattern used elsewhere in the codebase.",
+  confidence: 0.75,
+});
+
+export const mapOverEngineering = makeMapper({
+  check: "over-engineering",
+  severity: "low",
+  category: "complexity",
+  suggestion: "Simplify to the minimum viable abstraction.",
+  confidence: 0.7,
+});

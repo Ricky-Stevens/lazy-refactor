@@ -16,20 +16,16 @@ import { registerRunScan } from "./tools-scan.js";
 import { registerFocusedScanTools } from "./tools-scan-focused.js";
 import { registerStateTools } from "./tools-state.js";
 
-// ─── Server bootstrap ─────────────────────────────────────────────────────────
-
 const projectPath = process.cwd();
 
 const server = new McpServer({
   name: "lazy-refactor",
-  version: "0.3.3",
+  version: "0.3.4",
 });
 
 registerRunScan(server, projectPath);
 registerFocusedScanTools(server, projectPath);
 registerStateTools(server, projectPath);
-
-// ─── Start ────────────────────────────────────────────────────────────────────
 
 async function main() {
   const transport = new StdioServerTransport();
