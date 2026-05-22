@@ -15,7 +15,7 @@ import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
-import { addFindings, getSummary } from "../state/findings.js";
+import { addFindings, clearFindings, getSummary } from "../state/findings.js";
 import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 import {
   mapCluster,
@@ -166,6 +166,7 @@ export function registerRunScan(server, projectPath) {
       try {
         const resolvedPath = await validateScanPath(scanPath);
         const config = await readConfig(projectPath);
+        const isFullScan = !options.focus;
         const focus = options.focus ?? [
           "duplicates",
           "dead-code",
@@ -177,6 +178,8 @@ export function registerRunScan(server, projectPath) {
         ];
         const exclude = [...config.exclude, ...(options.exclude ?? [])];
         const languages = await resolveLanguages(config, options.languages, resolvedPath);
+
+        if (isFullScan) await clearFindings(projectPath);
 
         const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);
         const filtered = filterDisabledChecks(allFindings, config);
