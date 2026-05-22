@@ -17,7 +17,8 @@ describe("rule behaviour: rewritten and added rules", () => {
       "empty-catch.ts": "try { foo(); } catch (e) {}\n",
       "async-effect.tsx": "useEffect(async () => { await fetch('/x'); }, []);\n",
       "xss-bad.tsx": "<div dangerouslySetInnerHTML={{ __html: html }} />\n",
-      "xss-good.tsx": "import DOMPurify from 'dompurify';\n<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />\n",
+      "xss-good.tsx":
+        "import DOMPurify from 'dompurify';\n<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />\n",
       "bare.py": "try:\n    x = 1\nexcept:\n    pass\n",
       "wildcard.py": "from os import *\n",
       "mutable.py": "def foo(items=[]):\n    return items\n",
@@ -25,7 +26,8 @@ describe("rule behaviour: rewritten and added rules", () => {
       "open-good.py": "with open('x.txt') as f:\n    pass\n",
       "discard.go": "package x\nfunc f() {\n    _ = doThing()\n}\n",
       "range.go": "package x\nfunc f() {\n    for _, v := range items {\n        _ = v\n    }\n}\n",
-      "sql.go": 'package x\nfunc q(id string) string { return fmt.Sprintf("SELECT * FROM users WHERE id=%s", id) }\n',
+      "sql.go":
+        'package x\nfunc q(id string) string { return fmt.Sprintf("SELECT * FROM users WHERE id=%s", id) }\n',
       "Broad.java": "class X { void f() { try {} catch (Exception e) {} } }\n",
       "Sync.cs": "class X { void F() { var r = task.Result; } }\n",
       "secret-bad.js": 'const api_key = "sk_live_abc123def456";\n',
@@ -35,7 +37,8 @@ describe("rule behaviour: rewritten and added rules", () => {
       "secret-go.go": 'package x\nvar apiKey = "sk_live_abc123def456"\n',
       "pctfmt.py": "x = '%s is %d' % (name, age)\n",
       "strfmt.py": "x = '{} is {}'.format(name, age)\n",
-      "sql-concat.go": 'package x\nfunc q(id string) string { return "SELECT * FROM users WHERE id=" + id }\n',
+      "sql-concat.go":
+        'package x\nfunc q(id string) string { return "SELECT * FROM users WHERE id=" + id }\n',
       "goroutine-named.go": "package x\nfunc f() {\n    go handleRequest(conn)\n}\n",
       "secret-screaming.js": 'const API_KEY = "sk_live_abc123def456";\n',
       "secret-openai.js": 'const OPENAI_API_KEY = "sk_live_abc123def456";\n',

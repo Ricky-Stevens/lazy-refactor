@@ -20,7 +20,11 @@ function isUnused(lines, name, afterIndex) {
  * @returns {string}
  */
 function localAlias(sym) {
-  return sym.trim().split(/\s+as\s+/).pop().trim();
+  return sym
+    .trim()
+    .split(/\s+as\s+/)
+    .pop()
+    .trim();
 }
 
 /**

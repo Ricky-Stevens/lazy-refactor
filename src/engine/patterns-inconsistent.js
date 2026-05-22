@@ -60,17 +60,19 @@ const approachPatterns = {
  * @returns {string}
  */
 function stripNoise(content) {
-  return content
-    // Block and line comments, hash comments (Python/Ruby)
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-    .replace(/^\s*#[^\n]*/gm, "")
-    // String literals (template, double-quoted, single-quoted)
-    .replace(/`[^`]*`/g, '""')
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    // Regex literals (preceded by operator/punctuation/whitespace)
-    .replace(/(?<=[=({[,;!&|?:\s])\/[^/\n]+\/[gimsuy]*/g, '""');
+  return (
+    content
+      // Block and line comments, hash comments (Python/Ruby)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/^\s*#[^\n]*/gm, "")
+      // String literals (template, double-quoted, single-quoted)
+      .replace(/`[^`]*`/g, '""')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      // Regex literals (preceded by operator/punctuation/whitespace)
+      .replace(/(?<=[=({[,;!&|?:\s])\/[^/\n]+\/[gimsuy]*/g, '""')
+  );
 }
 
 /**

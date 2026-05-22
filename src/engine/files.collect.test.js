@@ -203,10 +203,14 @@ describe("collectFiles", () => {
       await writeFile(join(dir, "real", "target.ts"), "export const s = 1;");
       try {
         await symlink(join(dir, "real", "target.ts"), join(dir, "links", "linked.ts"));
-      } catch { /* symlinks may not be supported */ }
+      } catch {
+        /* symlinks may not be supported */
+      }
       try {
         await symlink(join(dir, "real"), join(dir, "links", "real-dir"));
-      } catch { /* symlinks may not be supported */ }
+      } catch {
+        /* symlinks may not be supported */
+      }
     });
 
     test("follows file symlinks", async () => {

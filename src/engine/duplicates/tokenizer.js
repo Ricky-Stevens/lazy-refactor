@@ -164,7 +164,10 @@ export function tokenizeWithPositions(content) {
     const ch = content[i];
 
     // Skip whitespace
-    if (/\s/.test(ch)) { i++; continue; }
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
 
     // Line comments: // or #
     if (ch === "#" || (ch === "/" && content[i + 1] === "/")) {

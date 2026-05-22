@@ -155,7 +155,10 @@ const emptySchema = z.object({});
 export function registerStateTools(server, projectPath) {
   server.registerTool(
     "get_findings",
-    { description: "Return persisted findings, optionally filtered. Supports pagination.", inputSchema: findingsSchema },
+    {
+      description: "Return persisted findings, optionally filtered. Supports pagination.",
+      inputSchema: findingsSchema,
+    },
     makeFindingsHandler(projectPath),
   );
 
@@ -167,7 +170,10 @@ export function registerStateTools(server, projectPath) {
 
   server.registerTool(
     "update_finding",
-    { description: "Update the status and/or notes on a finding.", inputSchema: updateFindingSchema },
+    {
+      description: "Update the status and/or notes on a finding.",
+      inputSchema: updateFindingSchema,
+    },
     makeUpdateFindingHandler(projectPath),
   );
 
@@ -179,7 +185,10 @@ export function registerStateTools(server, projectPath) {
 
   server.registerTool(
     "get_summary",
-    { description: "Return summary statistics for all persisted findings.", inputSchema: emptySchema },
+    {
+      description: "Return summary statistics for all persisted findings.",
+      inputSchema: emptySchema,
+    },
     makeSummaryHandler(projectPath),
   );
 
@@ -191,7 +200,10 @@ export function registerStateTools(server, projectPath) {
 
   server.registerTool(
     "update_config",
-    { description: "Deep-merge overrides into project config and write .lazy-refactor.json.", inputSchema: overridesSchema },
+    {
+      description: "Deep-merge overrides into project config and write .lazy-refactor.json.",
+      inputSchema: overridesSchema,
+    },
     makeUpdateConfigHandler(projectPath),
   );
 }

@@ -38,7 +38,12 @@ async function readPythonDeps(dir) {
     const req = await readFile(join(dir, "requirements.txt"), "utf8");
     return req
       .split("\n")
-      .map((l) => l.trim().split(/[>=<!]/)[0].trim())
+      .map((l) =>
+        l
+          .trim()
+          .split(/[>=<!]/)[0]
+          .trim(),
+      )
       .filter(Boolean);
   } catch {
     return null;
@@ -94,12 +99,17 @@ async function detectManifest(dir) {
 
   // Use the first detected ecosystem as the manifest type label.
   const type =
-    npm != null ? "npm" :
-    go != null ? "go" :
-    python != null ? "python" :
-    csharp != null ? "csharp" :
-    java != null ? "java" :
-    "unknown";
+    npm != null
+      ? "npm"
+      : go != null
+        ? "go"
+        : python != null
+          ? "python"
+          : csharp != null
+            ? "csharp"
+            : java != null
+              ? "java"
+              : "unknown";
 
   return { type, deps };
 }

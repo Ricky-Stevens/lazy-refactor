@@ -144,4 +144,3 @@ export function fail(err) {
   const message = err instanceof Error ? err.message : String(err);
   return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
 }
-

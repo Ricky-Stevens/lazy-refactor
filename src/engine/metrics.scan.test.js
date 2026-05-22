@@ -83,11 +83,17 @@ describe("computeMetrics — directory scan", () => {
 
   test("emits finding for files exceeding maxComplexity", async () => {
     const result = await computeMetrics(tmpDir, { maxComplexity: 0, languages: ["javascript"] });
-    expect(result.findings.filter((f) => f.ruleId === "metrics-high-complexity").length).toBeGreaterThan(0);
+    expect(
+      result.findings.filter((f) => f.ruleId === "metrics-high-complexity").length,
+    ).toBeGreaterThan(0);
   });
 
   test("default maxComplexity is 15 and maxNesting is 4", async () => {
-    const result = await computeMetrics(tmpDir, { maxComplexity: 15, maxNesting: 4, languages: ["javascript"] });
+    const result = await computeMetrics(tmpDir, {
+      maxComplexity: 15,
+      maxNesting: 4,
+      languages: ["javascript"],
+    });
     expect(result).toHaveProperty("fileMetrics");
     expect(result).toHaveProperty("findings");
   });
@@ -243,7 +249,16 @@ describe("computeMetrics — SKIP_DIRS", () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "metrics-skipdir-"));
     await writeFile(join(tmpDir, "root.js"), "const x = 1;\n");
 
-    const skippedDirs = ["dist", "build", "__pycache__", "obj", "bin", "target", ".gradle", ".next"];
+    const skippedDirs = [
+      "dist",
+      "build",
+      "__pycache__",
+      "obj",
+      "bin",
+      "target",
+      ".gradle",
+      ".next",
+    ];
     for (const d of skippedDirs) {
       await mkdir(join(tmpDir, d), { recursive: true });
       await writeFile(join(tmpDir, d, "hidden.js"), "const skip = true;\n");

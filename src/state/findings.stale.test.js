@@ -155,7 +155,7 @@ describe("stale finding pruning", () => {
     await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
     await addFindings(projectPath, [f1], "scan-2", "/repo");
 
-    const summary = await loadFindings(projectPath).then((s) =>
+    const summary = await loadFindings(projectPath).then((_s) =>
       import("./findings.js").then(({ getSummary }) => getSummary(projectPath)),
     );
     expect(summary.totalFindings).toBe(1);

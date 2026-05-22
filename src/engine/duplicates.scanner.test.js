@@ -92,7 +92,11 @@ class EventEmitter {
     await writeFile(join(subDir, "x.js"), makeCodeBlock("a", "b", "a"));
     await writeFile(join(subDir, "y.js"), makeCodeBlock("p", "q", "p"));
 
-    const allFindings = await scanDuplicates(subDir, { minTokens: 10, similarity: 0.7, minConfidence: 0 });
+    const allFindings = await scanDuplicates(subDir, {
+      minTokens: 10,
+      similarity: 0.7,
+      minConfidence: 0,
+    });
     const pairFindings = allFindings.filter((f) => f.check === "duplicate");
     expect(pairFindings.length).toBeGreaterThan(0);
     for (const f of pairFindings) {
@@ -113,7 +117,12 @@ class EventEmitter {
       expect(typeof f.structuralRatio).toBe("number");
       expect(typeof f.tokenDiversity).toBe("number");
       expect(typeof f.category).toBe("string");
-      expect(["extract-function", "extract-and-share", "extract-wrapper", "extract-config"]).toContain(f.category);
+      expect([
+        "extract-function",
+        "extract-and-share",
+        "extract-wrapper",
+        "extract-config",
+      ]).toContain(f.category);
       expect(typeof f.snippet).toBe("string");
       expect(f.snippet.length).toBeGreaterThan(0);
     }
@@ -252,8 +261,18 @@ class EventEmitter {
     await writeFile(join(subDir, "lib.js"), makeCodeBlock("a", "b", "a"));
     await writeFile(join(subDir, "lib.test.js"), makeCodeBlock("x", "y", "x"));
 
-    const withTests = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, excludeTests: false, minConfidence: 0 });
-    const withoutTests = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, excludeTests: true, minConfidence: 0 });
+    const withTests = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      excludeTests: false,
+      minConfidence: 0,
+    });
+    const withoutTests = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      excludeTests: true,
+      minConfidence: 0,
+    });
 
     const pairsWith = withTests.filter((f) => f.check === "duplicate");
     const pairsWithout = withoutTests.filter((f) => f.check === "duplicate");
@@ -268,7 +287,11 @@ class EventEmitter {
     await writeFile(join(subDir, "mod.js"), makeCodeBlock("a", "b", "a"));
     await writeFile(join(subDir, "mod.spec.js"), makeCodeBlock("x", "y", "x"));
 
-    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const findings = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      minConfidence: 0,
+    });
     const pairs = findings.filter((f) => f.check === "duplicate");
     expect(pairs).toHaveLength(0);
   });
@@ -296,7 +319,11 @@ class EventEmitter {
     await writeFile(join(subDir, "rules-a.js"), ruleFileA);
     await writeFile(join(subDir, "rules-b.js"), ruleFileB);
 
-    const unfiltered = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const unfiltered = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      minConfidence: 0,
+    });
     const filtered = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
 
     const unfilteredPairs = unfiltered.filter((f) => f.check === "duplicate");
@@ -330,15 +357,20 @@ class EventEmitter {
     const subDir = join(dir, "dup-no-filter");
     await mkdir(subDir, { recursive: true });
 
-    const dataBlock = Array.from({ length: 15 }, (_, i) =>
-      `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`
+    const dataBlock = Array.from(
+      { length: 15 },
+      (_, i) => `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`,
     ).join(",\n");
     const file = `export const data = [\n${dataBlock}\n];`;
 
     await writeFile(join(subDir, "data-a.js"), file);
     await writeFile(join(subDir, "data-b.js"), file);
 
-    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const findings = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      minConfidence: 0,
+    });
     const pairs = findings.filter((f) => f.check === "duplicate");
 
     expect(pairs.length).toBeGreaterThan(0);
@@ -374,15 +406,20 @@ class EventEmitter {
     const subDir = join(dir, "dup-category-data");
     await mkdir(subDir, { recursive: true });
 
-    const dataBlock = Array.from({ length: 15 }, (_, i) =>
-      `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`
+    const dataBlock = Array.from(
+      { length: 15 },
+      (_, i) => `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`,
     ).join(",\n");
     const file = `export const data = [\n${dataBlock}\n];`;
 
     await writeFile(join(subDir, "d1.js"), file);
     await writeFile(join(subDir, "d2.js"), file);
 
-    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const findings = await scanDuplicates(subDir, {
+      minTokens: 20,
+      similarity: 0.7,
+      minConfidence: 0,
+    });
     const pairs = findings.filter((f) => f.check === "duplicate");
     expect(pairs.length).toBeGreaterThan(0);
     expect(pairs[0].category).toBe("extract-config");
@@ -392,7 +429,8 @@ class EventEmitter {
     const subDir = join(dir, "dup-category-wrapper");
     await mkdir(subDir, { recursive: true });
 
-    const wrapper = (name) => `
+    const wrapper = (name) =>
+      `
 async function ${name}(url) {
   try {
     const response = await fetch(url);

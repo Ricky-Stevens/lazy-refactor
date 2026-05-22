@@ -9,13 +9,55 @@ import {
 
 describe("computeStructuralRatio", () => {
   it("returns high ratio for control-flow-heavy windows", () => {
-    const tokens = ["function", "IDENT", "(", "IDENT", ")", "{", "if", "(", "IDENT", ">", "NUM", ")", "{", "return", "IDENT", "}", "return", "IDENT", "}"];
+    const tokens = [
+      "function",
+      "IDENT",
+      "(",
+      "IDENT",
+      ")",
+      "{",
+      "if",
+      "(",
+      "IDENT",
+      ">",
+      "NUM",
+      ")",
+      "{",
+      "return",
+      "IDENT",
+      "}",
+      "return",
+      "IDENT",
+      "}",
+    ];
     const ratio = computeStructuralRatio(tokens, 0, tokens.length);
     expect(ratio).toBeGreaterThan(0.3);
   });
 
   it("returns low ratio for data-heavy windows", () => {
-    const tokens = ["{", "IDENT", ":", "STR", ",", "IDENT", ":", "STR", ",", "IDENT", ":", "STR", ",", "IDENT", ":", "NUM", ",", "IDENT", ":", "STR", "}"];
+    const tokens = [
+      "{",
+      "IDENT",
+      ":",
+      "STR",
+      ",",
+      "IDENT",
+      ":",
+      "STR",
+      ",",
+      "IDENT",
+      ":",
+      "STR",
+      ",",
+      "IDENT",
+      ":",
+      "NUM",
+      ",",
+      "IDENT",
+      ":",
+      "STR",
+      "}",
+    ];
     const ratio = computeStructuralRatio(tokens, 0, tokens.length);
     expect(ratio).toBeLessThan(0.1);
   });
@@ -41,7 +83,23 @@ describe("computeStructuralRatio", () => {
 
 describe("computeTokenDiversity", () => {
   it("returns high diversity for varied tokens", () => {
-    const tokens = ["function", "IDENT", "(", ")", "{", "const", "=", "IDENT", "+", "NUM", ";", "if", ">", "return", "}"];
+    const tokens = [
+      "function",
+      "IDENT",
+      "(",
+      ")",
+      "{",
+      "const",
+      "=",
+      "IDENT",
+      "+",
+      "NUM",
+      ";",
+      "if",
+      ">",
+      "return",
+      "}",
+    ];
     const diversity = computeTokenDiversity(tokens, 0, tokens.length);
     expect(diversity).toBeGreaterThan(0.7);
   });
@@ -95,14 +153,14 @@ describe("scoreConfidence", () => {
   });
 
   it("penalises high-density regions", () => {
-    const lowDensity = scoreConfidence(0.20, 0.15, 1, 1.0);
-    const highDensity = scoreConfidence(0.20, 0.15, 8, 1.0);
+    const lowDensity = scoreConfidence(0.2, 0.15, 1, 1.0);
+    const highDensity = scoreConfidence(0.2, 0.15, 8, 1.0);
     expect(highDensity).toBeLessThan(lowDensity * 0.5);
   });
 
   it("incorporates similarity", () => {
-    const perfect = scoreConfidence(0.30, 0.20, 1, 1.0);
-    const partial = scoreConfidence(0.30, 0.20, 1, 0.85);
+    const perfect = scoreConfidence(0.3, 0.2, 1, 1.0);
+    const partial = scoreConfidence(0.3, 0.2, 1, 0.85);
     expect(partial).toBeLessThan(perfect);
     expect(partial).toBeGreaterThan(perfect * 0.7);
   });
@@ -145,12 +203,40 @@ describe("classifyRefactoring", () => {
   });
 
   it("returns extract-function for inline logic without declaration", () => {
-    const tokens = ["if", "(", "IDENT", ">", "NUM", ")", "{", "IDENT", "=", "IDENT", "+", "NUM", "}"];
+    const tokens = [
+      "if",
+      "(",
+      "IDENT",
+      ">",
+      "NUM",
+      ")",
+      "{",
+      "IDENT",
+      "=",
+      "IDENT",
+      "+",
+      "NUM",
+      "}",
+    ];
     expect(classifyRefactoring(tokens, 0, tokens.length, 0.35)).toBe("extract-function");
   });
 
   it("prefers extract-wrapper over extract-and-share when both match", () => {
-    const tokens = ["function", "IDENT", "(", ")", "{", "try", "{", "IDENT", "}", "catch", "{", "}", "}"];
+    const tokens = [
+      "function",
+      "IDENT",
+      "(",
+      ")",
+      "{",
+      "try",
+      "{",
+      "IDENT",
+      "}",
+      "catch",
+      "{",
+      "}",
+      "}",
+    ];
     expect(classifyRefactoring(tokens, 0, tokens.length, 0.4)).toBe("extract-wrapper");
   });
 });

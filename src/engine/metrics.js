@@ -12,21 +12,18 @@ export { computeFileMetrics, isPythonFile } from "./metrics-compute.js";
  * @returns {Array}
  */
 function buildThresholdFindings(metrics, file, thresholds) {
-  const {
-    maxFileLines,
-    maxComplexity,
-    maxNesting,
-    maxExportsPerFile,
-    maxImportsPerFile,
-  } = thresholds;
+  const { maxFileLines, maxComplexity, maxNesting, maxExportsPerFile, maxImportsPerFile } =
+    thresholds;
   const result = [];
 
   if (metrics.lineCount > maxFileLines) {
     result.push({
       ruleId: "metrics-long-file",
-      file, line: 1,
+      file,
+      line: 1,
       match: `${metrics.lineCount} lines`,
-      severity: "medium", category: "metrics",
+      severity: "medium",
+      category: "metrics",
       description: `File exceeds ${maxFileLines} line threshold (${metrics.lineCount} lines)`,
       suggestion: "Split the file into smaller, focused modules.",
       fixable: true,
@@ -36,9 +33,11 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.complexityScore > maxComplexity) {
     result.push({
       ruleId: "metrics-high-complexity",
-      file, line: 1,
+      file,
+      line: 1,
       match: `complexity ${metrics.complexityScore.toFixed(2)}`,
-      severity: "high", category: "metrics",
+      severity: "high",
+      category: "metrics",
       description: `File complexity score ${metrics.complexityScore.toFixed(2)} exceeds threshold ${maxComplexity}`,
       suggestion: "Reduce nesting, extract functions, and simplify branching logic.",
       fixable: true,
@@ -48,9 +47,11 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.maxNestingDepth > maxNesting) {
     result.push({
       ruleId: "metrics-deep-nesting",
-      file, line: 1,
+      file,
+      line: 1,
       match: `nesting depth ${metrics.maxNestingDepth}`,
-      severity: "medium", category: "metrics",
+      severity: "medium",
+      category: "metrics",
       description: `File max nesting depth ${metrics.maxNestingDepth} exceeds threshold ${maxNesting}`,
       suggestion: "Extract nested logic into named functions or guard clauses.",
       fixable: true,
@@ -60,9 +61,12 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.exportCount > maxExportsPerFile) {
     result.push({
       ruleId: "metrics-high-exports",
-      file, line: 1,
+      file,
+      line: 1,
       match: `${metrics.exportCount} exports`,
-      severity: "medium", check: "modularity", category: "modularity",
+      severity: "medium",
+      check: "modularity",
+      category: "modularity",
       confidence: 0.85,
       description: `File has ${metrics.exportCount} exports, exceeding threshold of ${maxExportsPerFile}`,
       suggestion: "Split exports into smaller, more focused modules.",
@@ -73,9 +77,12 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.importCount > maxImportsPerFile) {
     result.push({
       ruleId: "metrics-high-imports",
-      file, line: 1,
+      file,
+      line: 1,
       match: `${metrics.importCount} imports`,
-      severity: "medium", check: "modularity", category: "modularity",
+      severity: "medium",
+      check: "modularity",
+      category: "modularity",
       confidence: 0.85,
       description: `File has ${metrics.importCount} imports, exceeding threshold of ${maxImportsPerFile}`,
       suggestion: "Consider reducing dependencies or splitting the file.",
@@ -86,9 +93,12 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.commentToCodeRatio < 0.02 && metrics.complexityScore > maxComplexity) {
     result.push({
       ruleId: "metrics-low-comments",
-      file, line: 1,
+      file,
+      line: 1,
       match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
-      severity: "low", check: "comment-quality", category: "comment-quality",
+      severity: "low",
+      check: "comment-quality",
+      category: "comment-quality",
       confidence: 0.7,
       description: `Complex file (complexity ${metrics.complexityScore.toFixed(2)}) has very low comment ratio (${metrics.commentToCodeRatio})`,
       suggestion: "Add explanatory comments to complex logic.",
@@ -99,9 +109,12 @@ function buildThresholdFindings(metrics, file, thresholds) {
   if (metrics.commentToCodeRatio > 0.5) {
     result.push({
       ruleId: "metrics-excessive-comments",
-      file, line: 1,
+      file,
+      line: 1,
       match: `commentToCodeRatio ${metrics.commentToCodeRatio}`,
-      severity: "low", check: "comment-quality", category: "comment-quality",
+      severity: "low",
+      check: "comment-quality",
+      category: "comment-quality",
       confidence: 0.7,
       description: `File has excessive comment ratio (${metrics.commentToCodeRatio}) — more comments than code`,
       suggestion: "Review and prune redundant or narration-style comments.",
@@ -145,7 +158,13 @@ export async function computeMetrics(path, options = {}) {
 
   const fileMetrics = [];
   const findings = [];
-  const thresholds = { maxFileLines, maxComplexity, maxNesting, maxExportsPerFile, maxImportsPerFile };
+  const thresholds = {
+    maxFileLines,
+    maxComplexity,
+    maxNesting,
+    maxExportsPerFile,
+    maxImportsPerFile,
+  };
 
   for (const filePath of filePaths) {
     let content;

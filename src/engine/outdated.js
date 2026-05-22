@@ -140,10 +140,7 @@ async function checkJava(projectPath, findings) {
   for (const entry of entries) {
     const artifactName = entry.from.split(".").pop().split(" ")[0];
     const pomPattern = new RegExp(`<artifactId>\\s*${artifactName}\\s*</artifactId>`, "i");
-    const gradlePattern = new RegExp(
-      `implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`,
-      "i",
-    );
+    const gradlePattern = new RegExp(`implementation\\s+['"][^'"]*:${artifactName}[^'"]*['"]`, "i");
     if (
       pomPattern.test(manifestContent) ||
       gradlePattern.test(manifestContent) ||

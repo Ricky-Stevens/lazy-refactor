@@ -46,11 +46,11 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
     // if, else, for, while, switch, ternary, &&, ||
     const content = [
       "if (a && b || c) {", // if + && + || = 3
-      "  x ? 1 : 2;",       // ternary = 1
-      "} else {",            // else = 1
-      "  for (let i;;) {}",  // for = 1
-      "  while (x) {}",      // while = 1
-      "  switch (y) {}",     // switch = 1
+      "  x ? 1 : 2;", // ternary = 1
+      "} else {", // else = 1
+      "  for (let i;;) {}", // for = 1
+      "  while (x) {}", // while = 1
+      "  switch (y) {}", // switch = 1
       "}",
     ].join("\n");
     // Total: if(1) &&(1) ||(1) ternary(1) else(1) for(1) while(1) switch(1) = 8
@@ -75,7 +75,9 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
   });
 
   test("export count", () => {
-    const content = ["export function foo() {}", "export const bar = 1;", "const baz = 2;"].join("\n");
+    const content = ["export function foo() {}", "export const bar = 1;", "const baz = 2;"].join(
+      "\n",
+    );
     expect(computeFileMetrics(content, "foo.js").exportCount).toBe(2);
   });
 
@@ -90,12 +92,7 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
   });
 
   test("complexityScore formula: nestingDepth*3 + branchPoints*2 + lineCount/50", () => {
-    const content = [
-      "function f() {",
-      "  if (a) {",
-      "  }",
-      "}",
-    ].join("\n");
+    const content = ["function f() {", "  if (a) {", "  }", "}"].join("\n");
     const metrics = computeFileMetrics(content, "foo.js");
     const expected =
       metrics.maxNestingDepth * 3 + metrics.branchPointCount * 2 + metrics.lineCount / 50;
@@ -110,11 +107,11 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
 describe("computeFileMetrics — Python indent-based nesting", () => {
   test("uses indent-based nesting for .py files", () => {
     const content = [
-      "def outer():",       // indent 0
-      "    if True:",       // indent 4
+      "def outer():", // indent 0
+      "    if True:", // indent 4
       "        for x in y:", // indent 8
-      "            pass",   // indent 12
-      "    return 1",       // indent 4
+      "            pass", // indent 12
+      "    return 1", // indent 4
     ].join("\n");
     expect(computeFileMetrics(content, "script.py").maxNestingDepth).toBeGreaterThanOrEqual(3);
   });
@@ -180,7 +177,9 @@ describe("computeFileMetrics — Go export/import counting", () => {
   });
 
   test("counts standalone Go import", () => {
-    const content = ["package main", "", 'import "fmt"', "", "func main() { fmt.Println() }"].join("\n");
+    const content = ["package main", "", 'import "fmt"', "", "func main() { fmt.Println() }"].join(
+      "\n",
+    );
     expect(computeFileMetrics(content, "main.go").importCount).toBe(1);
   });
 

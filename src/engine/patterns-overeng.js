@@ -93,9 +93,8 @@ function extractClassBody(content, startSearchIdx) {
 function checkPassThrough(file, content, language, fi, findings) {
   const re = language === "go" ? goPasThroughRe : passThroughRe;
   const passThroughs = content.match(re) ?? [];
-  const totalFunctions = (
-    content.match(/(?:function\s+\w+|=>\s*[{(]|\w+\s*\([^)]*\)\s*\{)/g) ?? []
-  ).length;
+  const totalFunctions = (content.match(/(?:function\s+\w+|=>\s*[{(]|\w+\s*\([^)]*\)\s*\{)/g) ?? [])
+    .length;
 
   if (passThroughs.length === 0) return;
   if (totalFunctions === 0) return;

@@ -13,9 +13,7 @@ export function isPythonFile(filePath) {
 function stripLine(trimmed, python) {
   let s = trimmed.replace(/\/\/.*$/, "");
   if (python) s = s.replace(/#.*$/, "");
-  s = s
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  s = s.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'(?:[^'\\]|\\.)*'/g, "''");
   return s;
 }
 

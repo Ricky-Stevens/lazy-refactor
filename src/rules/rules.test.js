@@ -67,15 +67,18 @@ function assertValidSeverities(name, rules) {
   }
 }
 
-function assertValidPatterns(name, rules) {
+function assertValidPatterns(_name, rules) {
   // Invariant: pattern must be a compilable regex string — passed directly to new RegExp().
   for (const rule of rules) {
     expect(typeof rule.pattern, `Rule "${rule.id}" pattern must be a string`).toBe("string");
-    expect(() => new RegExp(rule.pattern), `Rule "${rule.id}" pattern is not a valid regex`).not.toThrow();
+    expect(
+      () => new RegExp(rule.pattern),
+      `Rule "${rule.id}" pattern is not a valid regex`,
+    ).not.toThrow();
   }
 }
 
-function assertValidAntiPatterns(name, rules) {
+function assertValidAntiPatterns(_name, rules) {
   // Invariant: antiPattern is string (compilable regex) or null.
   for (const rule of rules) {
     const val = rule.antiPattern;
@@ -84,12 +87,15 @@ function assertValidAntiPatterns(name, rules) {
       `Rule "${rule.id}" antiPattern must be a string or null`,
     ).toBe(true);
     if (typeof val === "string") {
-      expect(() => new RegExp(val), `Rule "${rule.id}" antiPattern is not a valid regex`).not.toThrow();
+      expect(
+        () => new RegExp(val),
+        `Rule "${rule.id}" antiPattern is not a valid regex`,
+      ).not.toThrow();
     }
   }
 }
 
-function assertValidFilePatterns(name, rules) {
+function assertValidFilePatterns(_name, rules) {
   // Invariant: filePattern scopes the rule to specific file types; must be non-empty.
   for (const rule of rules) {
     expect(
@@ -99,23 +105,24 @@ function assertValidFilePatterns(name, rules) {
   }
 }
 
-function assertValidExcludeArrays(name, rules) {
+function assertValidExcludeArrays(_name, rules) {
   // Invariant: exclude is always an array of strings (possibly empty).
   for (const rule of rules) {
     expect(Array.isArray(rule.exclude), `Rule "${rule.id}" exclude must be an array`).toBe(true);
     for (const glob of rule.exclude) {
-      expect(typeof glob === "string", `Rule "${rule.id}" exclude entries must be strings`).toBe(true);
+      expect(typeof glob === "string", `Rule "${rule.id}" exclude entries must be strings`).toBe(
+        true,
+      );
     }
   }
 }
 
-function assertFixableIsBoolean(name, rules) {
+function assertFixableIsBoolean(_name, rules) {
   // Invariant: fixable drives the fixer agent's dispatch logic — must be explicit boolean.
   for (const rule of rules) {
-    expect(
-      typeof rule.fixable === "boolean",
-      `Rule "${rule.id}" fixable must be a boolean`,
-    ).toBe(true);
+    expect(typeof rule.fixable === "boolean", `Rule "${rule.id}" fixable must be a boolean`).toBe(
+      true,
+    );
   }
 }
 

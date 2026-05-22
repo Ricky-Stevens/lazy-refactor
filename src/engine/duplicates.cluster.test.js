@@ -37,8 +37,28 @@ describe("clusterDuplicates", () => {
 
   it("merges transitive pairs into a single cluster (A-B + B-C = 1 cluster)", () => {
     const matches = [
-      { check: "duplicate", fileA: "a.js", fileB: "b.js", startLineA: 0, endLineA: 10, startLineB: 0, endLineB: 10, similarity: 0.9, tokenCount: 60 },
-      { check: "duplicate", fileA: "b.js", fileB: "c.js", startLineA: 0, endLineA: 10, startLineB: 0, endLineB: 10, similarity: 0.8, tokenCount: 40 },
+      {
+        check: "duplicate",
+        fileA: "a.js",
+        fileB: "b.js",
+        startLineA: 0,
+        endLineA: 10,
+        startLineB: 0,
+        endLineB: 10,
+        similarity: 0.9,
+        tokenCount: 60,
+      },
+      {
+        check: "duplicate",
+        fileA: "b.js",
+        fileB: "c.js",
+        startLineA: 0,
+        endLineA: 10,
+        startLineB: 0,
+        endLineB: 10,
+        similarity: 0.8,
+        tokenCount: 40,
+      },
     ];
     const clusters = clusterDuplicates(matches);
     expect(clusters).toHaveLength(1);
@@ -49,8 +69,28 @@ describe("clusterDuplicates", () => {
 
   it("keeps disconnected pairs as separate clusters", () => {
     const matches = [
-      { check: "duplicate", fileA: "a.js", fileB: "b.js", startLineA: 0, endLineA: 10, startLineB: 0, endLineB: 10, similarity: 0.9, tokenCount: 60 },
-      { check: "duplicate", fileA: "c.js", fileB: "d.js", startLineA: 0, endLineA: 10, startLineB: 0, endLineB: 10, similarity: 0.8, tokenCount: 40 },
+      {
+        check: "duplicate",
+        fileA: "a.js",
+        fileB: "b.js",
+        startLineA: 0,
+        endLineA: 10,
+        startLineB: 0,
+        endLineB: 10,
+        similarity: 0.9,
+        tokenCount: 60,
+      },
+      {
+        check: "duplicate",
+        fileA: "c.js",
+        fileB: "d.js",
+        startLineA: 0,
+        endLineA: 10,
+        startLineB: 0,
+        endLineB: 10,
+        similarity: 0.8,
+        tokenCount: 40,
+      },
     ];
     const clusters = clusterDuplicates(matches);
     expect(clusters).toHaveLength(2);
@@ -60,7 +100,17 @@ describe("clusterDuplicates", () => {
 
   it("includes a representative pair from the original matches", () => {
     const matches = [
-      { check: "duplicate", fileA: "x.js", fileB: "y.js", startLineA: 5, endLineA: 15, startLineB: 10, endLineB: 20, similarity: 0.92, tokenCount: 55 },
+      {
+        check: "duplicate",
+        fileA: "x.js",
+        fileB: "y.js",
+        startLineA: 5,
+        endLineA: 15,
+        startLineB: 10,
+        endLineB: 20,
+        similarity: 0.92,
+        tokenCount: 55,
+      },
     ];
     const clusters = clusterDuplicates(matches);
     expect(clusters[0].representativePair).toEqual({
@@ -75,7 +125,17 @@ describe("clusterDuplicates", () => {
 
   it("distinguishes same file with different line ranges as separate regions", () => {
     const matches = [
-      { check: "duplicate", fileA: "a.js", fileB: "a.js", startLineA: 0, endLineA: 10, startLineB: 50, endLineB: 60, similarity: 0.95, tokenCount: 50 },
+      {
+        check: "duplicate",
+        fileA: "a.js",
+        fileB: "a.js",
+        startLineA: 0,
+        endLineA: 10,
+        startLineB: 50,
+        endLineB: 60,
+        similarity: 0.95,
+        tokenCount: 50,
+      },
     ];
     const clusters = clusterDuplicates(matches);
     expect(clusters).toHaveLength(1);

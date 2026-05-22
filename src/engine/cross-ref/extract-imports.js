@@ -31,7 +31,10 @@ export function extractImports(content, language) {
 function exportedNames(symbolList) {
   const names = [];
   for (const sym of symbolList.split(",")) {
-    const name = sym.trim().split(/\s+as\s+/)[0].trim();
+    const name = sym
+      .trim()
+      .split(/\s+as\s+/)[0]
+      .trim();
     if (name && name !== "*") names.push(name);
   }
   return names;
@@ -90,7 +93,10 @@ function extractTypescriptImports(content) {
         const renamed = sym.trim().split(":");
         const afterColon = renamed.length > 1 ? renamed[1].trim() : renamed[0].trim();
         // Also handle `as` aliases (less common in require, but possible)
-        const name = afterColon.split(/\s+as\s+/).pop().trim();
+        const name = afterColon
+          .split(/\s+as\s+/)
+          .pop()
+          .trim();
         if (name) imports.push(name);
       }
       continue;
@@ -102,7 +108,6 @@ function extractTypescriptImports(content) {
     );
     if (reqDefault) {
       imports.push(reqDefault[1]);
-      continue;
     }
   }
 
@@ -112,7 +117,10 @@ function extractTypescriptImports(content) {
   let mlMatch;
   while ((mlMatch = multiLineRe.exec(content)) !== null) {
     for (const sym of mlMatch[1].split(",")) {
-      const name = sym.trim().split(/\s+as\s+/)[0].trim();
+      const name = sym
+        .trim()
+        .split(/\s+as\s+/)[0]
+        .trim();
       if (name && !imports.includes(name)) imports.push(name);
     }
   }

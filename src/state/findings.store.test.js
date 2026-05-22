@@ -2,13 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  addFindings,
-  getFinding,
-  loadFindings,
-  saveFindings,
-  updateFinding,
-} from "./findings.js";
+import { addFindings, getFinding, loadFindings, saveFindings, updateFinding } from "./findings.js";
 
 function makeFinding(overrides = {}) {
   return {
@@ -163,7 +157,9 @@ describe("updateFinding", () => {
   it("adds notes to a finding", async () => {
     const f = { ...makeFinding(), id: "f-00000002" };
     await addFindings(projectPath, [f], "scan-1", "/repo");
-    const updated = await updateFinding(projectPath, "f-00000002", { notes: "Confirmed false positive" });
+    const updated = await updateFinding(projectPath, "f-00000002", {
+      notes: "Confirmed false positive",
+    });
     expect(updated.notes).toBe("Confirmed false positive");
   });
 
@@ -171,4 +167,3 @@ describe("updateFinding", () => {
     expect(await updateFinding(projectPath, "f-nonexistent", { status: "fixed" })).toBeNull();
   });
 });
-

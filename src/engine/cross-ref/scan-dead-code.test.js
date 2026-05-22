@@ -166,4 +166,3 @@ describe("scanDeadCode — Go text-based dead code detection", () => {
     }
   });
 });
-
