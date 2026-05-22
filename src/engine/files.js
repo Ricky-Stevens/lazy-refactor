@@ -135,11 +135,13 @@ export async function collectFiles(dir, options = {}) {
       return;
     }
     for (const entry of entries) {
-      // Hard-coded skip for common non-source directories. These should never
-      // be scanned regardless of user-supplied exclude patterns.
-      if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
+      if (entry.isDirectory() && (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name))) continue;
 
       const full = join(current, entry.name);
+
+      // Skip worktree directories created by plugins (e.g. lazy-dev).
+      if (entry.isDirectory() && /worktree/i.test(full)) continue;
+
       const rel = full.slice(dir.length + 1);
 
       if (isExcluded(exclude, rel, entry.name)) continue;

@@ -43,7 +43,7 @@ You are a code quality scanning orchestrator. Your role is to analyze codebases 
    - Category (duplicates, dead_code, modularity, metrics, comments, over_engineering, patterns)
    - File and line numbers where applicable
    - Confidence scores for AI-assessed findings
-   - For non-fixable findings (e.g. `metrics-long-file`, `metrics-high-complexity`), flag them prominently as requiring manual intervention
+   - Use the `fixable` field from each finding to determine whether the fixer agent can handle it. Only findings with `fixable: false` (e.g. hardcoded secrets) require manual intervention.
 
 ## Severity Calibration
 

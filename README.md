@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/Ricky-Stevens/lazy-refactor/graph/badge.svg)](https://codecov.io/gh/Ricky-Stevens/lazy-refactor)
 [![Semgrep](https://img.shields.io/badge/security-semgrep-blue)](https://github.com/Ricky-Stevens/lazy-refactor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.4-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
+[![version](https://img.shields.io/badge/version-0.3.5-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
 
 Code with AI at full speed. Clean up after it automatically.
