@@ -129,6 +129,7 @@ export function computeFileMetrics(content, filePath) {
 
   let maxNestingDepth = 0;
   let branchPointCount = 0;
+  let complexityScore = 0;
   let commentLines = 0;
   let codeLines = 0;
   let exportCount = 0;
@@ -158,7 +159,10 @@ export function computeFileMetrics(content, filePath) {
     exportCount += exports;
     importCount += imports;
 
-    branchPointCount += countBranchPoints(stripped);
+    const bp = countBranchPoints(stripped);
+    branchPointCount += bp;
+    const currentDepth = python ? indentStack.length - 1 : nestingDepth;
+    complexityScore += bp * (1 + currentDepth);
 
     if (python) {
       const depth = updateIndentNesting(line, trimmed, indentStack);
@@ -169,9 +173,7 @@ export function computeFileMetrics(content, filePath) {
     }
   }
 
-  // Raw float — callers compare against fractional thresholds; rounding would cause boundary errors.
   const commentToCodeRatio = codeLines === 0 ? 0 : commentLines / codeLines;
-  const complexityScore = maxNestingDepth * 3 + branchPointCount * 2 + lines.length / 50;
 
   return {
     lineCount: lines.length,

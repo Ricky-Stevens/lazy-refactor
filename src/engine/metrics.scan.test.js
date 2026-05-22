@@ -88,9 +88,9 @@ describe("computeMetrics — directory scan", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("default maxComplexity is 15 and maxNesting is 4", async () => {
+  test("default maxComplexity is 100 and maxNesting is 4", async () => {
     const result = await computeMetrics(tmpDir, {
-      maxComplexity: 15,
+      maxComplexity: 100,
       maxNesting: 4,
       languages: ["javascript"],
     });
@@ -98,20 +98,23 @@ describe("computeMetrics — directory scan", () => {
     expect(result).toHaveProperty("findings");
   });
 
-  test("default thresholds 15/4 are used when no options provided for a scan", async () => {
+  test("default thresholds 100/4 are used when no options provided for a scan", async () => {
     const specificTmpDir = await mkdtemp(join(tmpdir(), "metrics-defaults-"));
-    // nesting=2, branches=10, lines=10: complexity = 6+20+0.2 = 26.2 > 15 but < 50
+    // 4 nested ifs (depths 1-4) + 20 branches at depth 5: 2+3+4+5 + 20*6 = 134 > 100
+    const branchLines = [];
+    for (let i = 0; i < 20; i++) branchLines.push(`    if (x${i}) {}`);
     const content = [
       "function f() {",
       "  if (a) {",
-      "    if (b) {} else {}",
-      "    if (c) {} else {}",
-      "    if (d) {} else {}",
-      "    if (e) {} else {}",
-      "    if (g) {} else {}",
+      "    if (b) {",
+      "      if (c) {",
+      "        if (d) {",
+      ...branchLines,
+      "        }",
+      "      }",
+      "    }",
       "  }",
       "}",
-      "const x = 1;",
     ].join("\n");
     await writeFile(join(specificTmpDir, "threshold.js"), content);
 
@@ -189,7 +192,11 @@ describe("computeMetrics — comment quality findings", () => {
     ].join("\n");
     await writeFile(join(dir, "complex-no-comments.js"), content);
 
-    const result = await computeMetrics(dir, { maxNesting: 999, languages: ["javascript"] });
+    const result = await computeMetrics(dir, {
+      maxNesting: 999,
+      maxComplexity: 15,
+      languages: ["javascript"],
+    });
     const finding = result.findings.find(
       (f) => f.ruleId === "metrics-low-comments" && f.file.includes("complex-no-comments.js"),
     );

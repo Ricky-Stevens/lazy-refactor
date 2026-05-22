@@ -169,7 +169,7 @@ function buildThresholdFindings(metrics, file, thresholds) {
 export async function computeMetrics(path, options = {}) {
   const {
     maxFileLines = 300,
-    maxComplexity = 15,
+    maxComplexity = 100,
     maxNesting = 4,
     maxExportsPerFile = 10,
     maxImportsPerFile = 15,

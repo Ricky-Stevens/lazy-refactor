@@ -13,7 +13,7 @@ const CONFIG_FILE = ".lazy-refactor.json";
 const DEFAULT_CONFIG = {
   thresholds: {
     maxFileLines: 300,
-    maxComplexity: 15,
+    maxComplexity: 100,
     maxNesting: 4,
     maxExportsPerFile: 10,
     maxImportsPerFile: 15,

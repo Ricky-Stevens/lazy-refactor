@@ -91,12 +91,13 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
     expect(computeFileMetrics(content, "foo.js").importCount).toBe(3);
   });
 
-  test("complexityScore formula: nestingDepth*3 + branchPoints*2 + lineCount/50", () => {
-    const content = ["function f() {", "  if (a) {", "  }", "}"].join("\n");
+  test("complexityScore is nesting-weighted branch accumulation", () => {
+    const content = ["function f() {", "  if (a) {", "    if (b) {", "    }", "  }", "}"].join(
+      "\n",
+    );
     const metrics = computeFileMetrics(content, "foo.js");
-    const expected =
-      metrics.maxNestingDepth * 3 + metrics.branchPointCount * 2 + metrics.lineCount / 50;
-    expect(metrics.complexityScore).toBeCloseTo(expected, 5);
+    // `if (a)` at depth 1 → 1*(1+1)=2, `if (b)` at depth 2 → 1*(1+2)=3
+    expect(metrics.complexityScore).toBe(5);
   });
 });
 
