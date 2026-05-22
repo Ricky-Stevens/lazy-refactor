@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { globToRegex } from "./files.js";
+import { globToRegex, SKIP_DIRS } from "./files.js";
 
 /** @type {boolean|null} */
 let _ripgrepAvailable = null;
@@ -39,6 +39,9 @@ function extractExtensions(filePattern) {
 /** Builds find(1) argument list matching the given extensions and exclude globs. */
 function buildFindArgs(exts, excludes) {
   const args = ["."];
+  // Prune dot-directories and common non-source dirs (mirrors collectFiles behaviour).
+  for (const dir of SKIP_DIRS) args.push("-not", "-path", `*/${dir}/*`);
+  args.push("-not", "-path", "*/.*");
   args.push("(");
   for (let i = 0; i < exts.length; i++) {
     if (i > 0) args.push("-o");

@@ -135,7 +135,8 @@ export async function collectFiles(dir, options = {}) {
       return;
     }
     for (const entry of entries) {
-      if (entry.isDirectory() && (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name))) continue;
+      if (entry.isDirectory() && (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)))
+        continue;
 
       const full = join(current, entry.name);
 
