@@ -11,6 +11,9 @@ const CONCERN_KEYWORDS = {
   "data-fetching": ["fetch", "axios", "http", "request"],
   config: ["config", "env", "settings", "getConfig"],
   validation: ["validate", "schema", "assert", "check"],
+  "file-locking": ["lock", "flock", "lockfile", "acquireLock"],
+  "process-spawning": ["execSync", "spawnSync", "child_process", "subprocess"],
+  "file-io": ["readFileSync", "writeFileSync", "createReadStream", "fsPromises"],
 };
 
 // Approach-detection patterns per concern
@@ -48,6 +51,30 @@ const approachPatterns = {
     { pattern: "assert()", re: /\bassert\s*\(/ },
     { pattern: "validate()", re: /\bvalidate\s*\(/ },
     { pattern: "manual check (if !x throw)", re: /if\s*\(![^)]+\)\s*(throw|return)/ },
+  ],
+  "file-locking": [
+    { pattern: "exclusive file flag (wx/O_EXCL)", re: /["']wx["']|O_EXCL|O_CREAT/ },
+    { pattern: "lockfile library", re: /\b(?:proper-lockfile|lockfile|fd-lock)\b/ },
+    { pattern: "flock/lockf syscall", re: /\b(?:flock|lockf|fcntl\.flock)\s*\(/ },
+    { pattern: "mkdir-based lock", re: /mkdir(?:Sync)?\s*\([^)]*lock/i },
+  ],
+  "process-spawning": [
+    { pattern: "exec/execSync (shell)", re: /\bexec(?:Sync)?\s*\(/ },
+    { pattern: "execFile/execFileSync (no shell)", re: /\bexecFile(?:Sync)?\s*\(/ },
+    { pattern: "spawn/spawnSync", re: /\bspawn(?:Sync)?\s*\(/ },
+    { pattern: "subprocess (Python)", re: /\bsubprocess\.(?:run|call|check_output|Popen)\s*\(/ },
+  ],
+  "file-io": [
+    {
+      pattern: "sync fs (readFileSync/writeFileSync)",
+      re: /\b(?:readFileSync|writeFileSync|appendFileSync)\s*\(/,
+    },
+    { pattern: "async fs/promises", re: /\bfs\/promises\b|\bfsPromises\b|\bfs\.promises\b/ },
+    { pattern: "stream I/O", re: /\bcreate(?:Read|Write)Stream\s*\(/ },
+    {
+      pattern: "callback fs",
+      re: /\bfs\.(?:readFile|writeFile|appendFile)\s*\([^)]*,\s*(?:function|\()/,
+    },
   ],
 };
 

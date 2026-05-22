@@ -15,6 +15,8 @@ import { collectFiles, readFilesBatched } from "./files.js";
 // Regex to detect pass-through functions (single-statement body that returns a call)
 const passThroughRe =
   /(?:function\s+\w+\s*\([^)]*\)|(?:const|let|var)\s+\w+\s*=\s*(?:\([^)]*\)|[^=])\s*=>)\s*\{?\s*return\s+\w+[\w.]*\([^)]*\)\s*;?\s*\}?/g;
+const conciseArrowRe =
+  /(?:const|let|var)\s+\w+\s*=\s*(?:\([^)]*\)|\w+)\s*=>\s*\w+[\w.]*\([^)]*\)\s*;?/g;
 const goPasThroughRe = /func\s+\w+\s*\([^)]*\)[^{]*\{\s*return\s+\w+\s*\([^)]*\)\s*\}/g;
 
 // Regex to find class definitions and their methods (TypeScript/JS/Java/C#)
@@ -91,19 +93,30 @@ function extractClassBody(content, startSearchIdx) {
  */
 function checkPassThrough(file, content, language, fi, findings) {
   const re = language === "go" ? goPasThroughRe : passThroughRe;
-  const passThroughs = content.match(re) ?? [];
-  const totalFunctions = (content.match(/(?:function\s+\w+|=>\s*[{(]|\w+\s*\([^)]*\)\s*\{)/g) ?? [])
-    .length;
+  const passThroughs = [
+    ...(content.match(re) ?? []),
+    ...(language !== "go" ? (content.match(conciseArrowRe) ?? []) : []),
+  ];
+  const totalFunctions = (
+    content.match(/(?:function\s+\w+|=>\s*[{(]|=>\s*\w|\w+\s*\([^)]*\)\s*\{)/g) ?? []
+  ).length;
 
   if (passThroughs.length === 0) return;
   if (totalFunctions === 0) return;
-  if (passThroughs.length / totalFunctions < 0.5) return;
+
+  const ratio = passThroughs.length / totalFunctions;
+  if (ratio < 0.5) return;
+
+  const description =
+    ratio >= 1.0
+      ? `All ${totalFunctions} exported functions are pass-throughs (fan-in: ${fi}) — file may be unnecessary indirection`
+      : `Low fan-in (${fi} importers) with ${passThroughs.length}/${totalFunctions} pass-through functions — may be unnecessary abstraction layer`;
 
   findings.push({
     check: "over-engineering",
     file,
     symbol: basename(file),
-    description: `Low fan-in (${fi} importers) with ${passThroughs.length}/${totalFunctions} pass-through functions — may be unnecessary abstraction layer`,
+    description,
   });
 }
 

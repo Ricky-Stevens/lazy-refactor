@@ -241,6 +241,79 @@ describe("computeMetrics — comment quality findings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// computeMetrics — grab-bag file detection
+// ---------------------------------------------------------------------------
+
+describe("computeMetrics — grab-bag file detection", () => {
+  test("flags a file named 'helpers.js' that exceeds size threshold", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-big-"));
+    const lines = Array.from({ length: 160 }, (_, i) => `const v${i} = ${i};`);
+    await writeFile(join(dir, "helpers.js"), lines.join("\n"));
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    const finding = result.findings.find((f) => f.ruleId === "metrics-grab-bag");
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe("medium");
+    expect(finding.category).toBe("modularity");
+  });
+
+  test("flags a file named 'utils.ts' with many exports", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-exports-"));
+    const lines = Array.from({ length: 8 }, (_, i) => `export const fn${i} = () => ${i};`);
+    await writeFile(join(dir, "utils.ts"), lines.join("\n"));
+
+    const result = await computeMetrics(dir, { maxExportsPerFile: 100, languages: ["typescript"] });
+    const finding = result.findings.find((f) => f.ruleId === "metrics-grab-bag");
+    expect(finding).toBeDefined();
+  });
+
+  test("does not flag a small file named 'helpers.js' with few exports", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-ok-"));
+    await writeFile(join(dir, "helpers.js"), "export const a = 1;\nexport const b = 2;\n");
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-grab-bag")).toBeUndefined();
+  });
+
+  test("does not flag a large file with a specific name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-specific-"));
+    const lines = Array.from({ length: 160 }, (_, i) => `const v${i} = ${i};`);
+    await writeFile(join(dir, "authentication.js"), lines.join("\n"));
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-grab-bag")).toBeUndefined();
+  });
+
+  test("does not flag 'common.js' when only one threshold is exceeded (AND required)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-common-"));
+    const lines = Array.from({ length: 160 }, (_, i) => `const v${i} = ${i};`);
+    await writeFile(join(dir, "common.js"), lines.join("\n"));
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-grab-bag")).toBeUndefined();
+  });
+
+  test("flags 'common.js' when both thresholds are exceeded", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-common-both-"));
+    const lines = Array.from({ length: 8 }, (_, i) => `export const fn${i} = () => ${i};`);
+    const padding = Array.from({ length: 150 }, (_, i) => `const v${i} = ${i};`);
+    await writeFile(join(dir, "common.js"), [...lines, ...padding].join("\n"));
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-grab-bag")).toBeDefined();
+  });
+
+  test("still flags 'helpers.js' with only one threshold (OR logic)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-grabbag-helpers-or-"));
+    const lines = Array.from({ length: 8 }, (_, i) => `export const fn${i} = () => ${i};`);
+    await writeFile(join(dir, "helpers.js"), lines.join("\n"));
+
+    const result = await computeMetrics(dir, { maxExportsPerFile: 100, languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-grab-bag")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // computeMetrics — SKIP_DIRS
 // ---------------------------------------------------------------------------
 

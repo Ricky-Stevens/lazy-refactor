@@ -7,7 +7,12 @@
  */
 
 import * as z from "zod";
-import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from "../engine/cross-ref.js";
+import {
+  scanDeadCode,
+  scanDivergentExports,
+  scanUnusedDeps,
+  scanUnusedImports,
+} from "../engine/cross-ref.js";
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
 import { clearFileCache } from "../engine/files.js";
@@ -15,17 +20,20 @@ import { computeMetrics } from "../engine/metrics.js";
 import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
+import { scanToctou } from "../engine/toctou.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
 import { addFindings, clearFindings, getSummary } from "../state/findings.js";
 import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 import {
   mapCluster,
   mapDeadExport,
+  mapDivergentExport,
   mapDupe,
   mapInconsistent,
   mapMetric,
   mapOverEngineering,
   mapPattern,
+  mapToctou,
   mapUnusedDep,
   mapUnusedImport,
 } from "./mappers.js";
@@ -93,10 +101,12 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
         scanDeadCode(resolvedPath, {}, { exclude, languages }),
         scanUnusedDeps(resolvedPath, { exclude }),
         scanUnusedImports(resolvedPath, { exclude, languages }),
-      ]).then(([dead, unusedDeps, unusedImports]) => [
+        scanDivergentExports(resolvedPath, { exclude, languages }),
+      ]).then(([dead, unusedDeps, unusedImports, divergent]) => [
         ...dead.map((f) => mapDeadExport(f, resolvedPath)),
         ...unusedDeps.map((f) => mapUnusedDep(f)),
         ...unusedImports.map((f) => mapUnusedImport(f, resolvedPath)),
+        ...divergent.map((f) => mapDivergentExport(f, resolvedPath)),
       ]),
     );
   }
@@ -119,6 +129,11 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
     tasks.push(
       scanPatterns(resolvedPath, rules, { exclude, languages }).then((pf) =>
         pf.map((f) => mapPattern(f)),
+      ),
+    );
+    tasks.push(
+      scanToctou(resolvedPath, { exclude, languages }).then((tf) =>
+        tf.map((f) => mapToctou(f, resolvedPath)),
       ),
     );
   }

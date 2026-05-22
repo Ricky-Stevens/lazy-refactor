@@ -1,5 +1,9 @@
+import { basename } from "node:path";
 import { collectFiles, readFilesBatched } from "./files.js";
 import { computeFileMetrics } from "./metrics-compute.js";
+
+const GRAB_BAG_STRONG_RE = /^(?:helpers?|utils?|misc|lib|tools|functions|methods)\./i;
+const GRAB_BAG_WEAK_RE = /^(?:common|shared)\./i;
 
 export { computeFileMetrics, isPythonFile } from "./metrics-compute.js";
 
@@ -119,6 +123,29 @@ function buildThresholdFindings(metrics, file, thresholds) {
       suggestion: "Review and prune redundant or narration-style comments.",
       fixable: true,
     });
+  }
+
+  const fileName = basename(file);
+  const isStrongGrabBag = GRAB_BAG_STRONG_RE.test(fileName);
+  const isWeakGrabBag = GRAB_BAG_WEAK_RE.test(fileName);
+  if (isStrongGrabBag || isWeakGrabBag) {
+    const isTooBig = metrics.lineCount > 150;
+    const isTooScattered = metrics.exportCount > 5;
+    const shouldFlag = isStrongGrabBag ? isTooBig || isTooScattered : isTooBig && isTooScattered;
+    if (shouldFlag) {
+      result.push({
+        ruleId: "metrics-grab-bag",
+        file,
+        line: 1,
+        match: `${fileName}: ${metrics.lineCount} lines, ${metrics.exportCount} exports`,
+        severity: "medium",
+        category: "modularity",
+        confidence: 0.8,
+        description: `'${fileName}' has a generic name with ${metrics.lineCount} lines and ${metrics.exportCount} exports — likely a grab-bag of unrelated concerns`,
+        suggestion: "Split into focused modules named after their specific responsibility.",
+        fixable: true,
+      });
+    }
   }
 
   return result;

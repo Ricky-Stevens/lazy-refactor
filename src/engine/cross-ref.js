@@ -7,5 +7,6 @@ export { ENTRY_POINT_NAMES, TEST_FILE_PATTERNS } from "./cross-ref/constants.js"
 export { extractExports } from "./cross-ref/extract-exports.js";
 export { extractImports } from "./cross-ref/extract-imports.js";
 export { scanDeadCode } from "./cross-ref/scan-dead-code.js";
+export { scanDivergentExports } from "./cross-ref/scan-divergent-exports.js";
 export { scanUnusedDeps } from "./cross-ref/scan-unused-deps.js";
 export { scanUnusedImports } from "./cross-ref/scan-unused-imports.js";

@@ -155,6 +155,88 @@ describe("scanOverEngineering", () => {
 });
 
 // ---------------------------------------------------------------------------
+// scanOverEngineering — dispatch-only file detection
+// ---------------------------------------------------------------------------
+
+describe("scanOverEngineering — dispatch-only file detection", () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "dispatch-only-"));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("flags a file where all functions are pass-throughs with stronger message", async () => {
+    const subDir = join(dir, "all-passthrough");
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, "dispatch.js"),
+      [
+        "export function wrapA(x) { return realA(x); }",
+        "export function wrapB(x) { return realB(x); }",
+        "export function wrapC(x) { return realC(x); }",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(subDir, "consumer.js"),
+      "import { wrapA } from './dispatch.js';\nwrapA(1);",
+    );
+
+    const findings = await scanOverEngineering(subDir, {});
+    const dispatchFindings = findings.filter(
+      (f) => f.file.endsWith("dispatch.js") && f.description.includes("unnecessary indirection"),
+    );
+    expect(dispatchFindings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("detects concise arrow pass-through functions", async () => {
+    const subDir = join(dir, "concise-arrows");
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, "arrows.js"),
+      [
+        "export const wrapA = (x) => realA(x);",
+        "export const wrapB = x => realB(x);",
+        "export const wrapC = (a, b) => realC(a, b);",
+      ].join("\n"),
+    );
+    await writeFile(join(subDir, "caller.js"), "import { wrapA } from './arrows.js';\nwrapA(1);");
+
+    const findings = await scanOverEngineering(subDir, {});
+    const arrowFindings = findings.filter(
+      (f) => f.file.endsWith("arrows.js") && f.description.includes("pass-through"),
+    );
+    expect(arrowFindings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("uses partial message when only some functions are pass-throughs", async () => {
+    const subDir = join(dir, "partial-passthrough");
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(
+      join(subDir, "mixed.js"),
+      [
+        "export function wrapper(x) { return real(x); }",
+        "export function passThru(x) { return other(x); }",
+        "export function actualWork(x) { return x * 2 + 1; }",
+      ].join("\n"),
+    );
+    await writeFile(join(subDir, "user.js"), "import { wrapper } from './mixed.js';\nwrapper(1);");
+
+    const findings = await scanOverEngineering(subDir, {});
+    const mixedFindings = findings.filter(
+      (f) => f.file.endsWith("mixed.js") && f.description.includes("abstraction layer"),
+    );
+    expect(mixedFindings.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // scanOverEngineering — C# colon-based interface implementation
 // ---------------------------------------------------------------------------
 

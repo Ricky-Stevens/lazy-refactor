@@ -173,3 +173,36 @@ export const mapOverEngineering = makeMapper({
   suggestion: "Simplify to the minimum viable abstraction.",
   confidence: 0.7,
 });
+
+export function mapDivergentExport(f, resolvedPath) {
+  return {
+    check: f.check,
+    severity: "medium",
+    category: "duplication",
+    locations: f.locations.map((l) => ({
+      file: l.file.replace(`${resolvedPath}/`, ""),
+      startLine: l.line + 1,
+    })),
+    description: f.description,
+    symbol: f.symbol,
+    suggestion: "Consolidate into a single shared implementation and import from one location.",
+    fixable: true,
+    confidence: 0.8,
+    language: "common",
+  };
+}
+
+export function mapToctou(f, resolvedPath) {
+  return {
+    check: f.check,
+    severity: "high",
+    category: "security",
+    locations: [{ file: f.file.replace(`${resolvedPath}/`, ""), startLine: f.line }],
+    description: f.description,
+    suggestion:
+      "Use atomic file operations (e.g., O_EXCL/wx flag, exist_ok=True) instead of check-then-act patterns.",
+    fixable: true,
+    confidence: 0.85,
+    language: "common",
+  };
+}
