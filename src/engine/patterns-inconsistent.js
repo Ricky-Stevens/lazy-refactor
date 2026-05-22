@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { isTestFile } from "./cross-ref.js";
-import { collectFiles } from "./files.js";
+import { collectFiles, readFilesBatched } from "./files.js";
 
 // ---------------------------------------------------------------------------
 // Check 10 — Inconsistent patterns
@@ -91,35 +90,15 @@ function matchedApproaches(concern, stripped) {
   return matched;
 }
 
-/**
- * Read a file, strip noise, and return matched approaches for the given concern.
- * Returns null if the file cannot be read or doesn't mention the concern keywords.
- * @param {string} file
- * @param {string} concern
- * @param {string[]} keywords
- * @returns {Promise<string[]|null>}
- */
-async function fileApproaches(file, concern, keywords) {
-  let content;
-  try {
-    content = await readFile(file, "utf8");
-  } catch {
-    return null;
-  }
-
-  const stripped = stripNoise(content);
-
-  // Only care about files that mention at least one concern keyword (word-boundary to avoid
-  // substring false-positives like "log" matching "dialog" or "catalog")
-  const hasConcern = keywords.some((kw) => new RegExp(`\\b${kw}\\b`).test(stripped));
-  if (!hasConcern) return null;
-
-  return matchedApproaches(concern, stripped);
+// Precompile keyword regexes per concern to avoid repeated construction.
+const _keywordRegexes = {};
+for (const [concern, keywords] of Object.entries(CONCERN_KEYWORDS)) {
+  _keywordRegexes[concern] = keywords.map((kw) => new RegExp(`\\b${kw}\\b`));
 }
 
 /**
  * Scan for inconsistent coding patterns across concerns.
- * Flags concerns where 3+ different approaches are found across the codebase.
+ * Reads each file once and checks all concerns against the stripped content.
  * @param {string} path - Directory to scan
  * @param {object} [options]
  * @param {string[]} [options.exclude]
@@ -128,29 +107,35 @@ async function fileApproaches(file, concern, keywords) {
  */
 export async function scanInconsistentPatterns(path, options = {}) {
   const files = await collectFiles(path, options);
-  const findings = [];
+  const contents = await readFilesBatched(files);
 
-  for (const [concern, keywords] of Object.entries(CONCERN_KEYWORDS)) {
-    // Map approach pattern label -> list of files using it
-    const approachFiles = {};
+  const concerns = Object.entries(CONCERN_KEYWORDS);
+  const approachFilesByConcern = {};
+  for (const [concern] of concerns) {
+    approachFilesByConcern[concern] = {};
     for (const { pattern } of approachPatterns[concern] ?? []) {
-      approachFiles[pattern] = [];
+      approachFilesByConcern[concern][pattern] = [];
     }
+  }
 
-    for (const file of files) {
-      if (isTestFile(file)) continue;
-      const approaches = await fileApproaches(file, concern, keywords);
-      if (!approaches) continue;
+  for (const [file, content] of contents) {
+    if (isTestFile(file)) continue;
+    const stripped = stripNoise(content);
+
+    for (const [concern] of concerns) {
+      const hasConcern = _keywordRegexes[concern].some((rx) => rx.test(stripped));
+      if (!hasConcern) continue;
+
+      const approaches = matchedApproaches(concern, stripped);
       for (const pattern of approaches) {
-        approachFiles[pattern].push(file);
+        approachFilesByConcern[concern][pattern].push(file);
       }
     }
+  }
 
-    // Collect approaches that are actually used (at least one file).
-    // Note: existing tests rely on a single-file approach being counted; raising
-    // this to >=2 was considered but would break that contract. Comment-stripping
-    // (above) is the more impactful precision fix here.
-    const usedApproaches = Object.entries(approachFiles)
+  const findings = [];
+  for (const [concern] of concerns) {
+    const usedApproaches = Object.entries(approachFilesByConcern[concern])
       .filter(([, fileList]) => fileList.length > 0)
       .map(([pattern, fileList]) => ({ pattern, files: fileList, count: fileList.length }));
 

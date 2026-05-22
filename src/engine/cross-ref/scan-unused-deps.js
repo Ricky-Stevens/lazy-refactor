@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { collectFiles } from "../files.js";
+import { collectFiles, readFilesBatched } from "../files.js";
 
 // --- Per-manifest parsers ---
 // Each returns an array of dependency names, or null if the manifest is absent.
@@ -126,17 +126,8 @@ export async function scanUnusedDeps(path, options = {}) {
   if (!manifest) return [];
 
   const files = await collectFiles(path, options);
-
-  // Build combined source content for grep-style presence checks.
-  const contents = [];
-  for (const file of files) {
-    try {
-      contents.push(await readFile(file, "utf8"));
-    } catch {
-      // skip unreadable
-    }
-  }
-  const combined = contents.join("\n");
+  const contentMap = await readFilesBatched(files);
+  const combined = [...contentMap.values()].join("\n");
 
   const findings = [];
   for (const dep of manifest.deps) {

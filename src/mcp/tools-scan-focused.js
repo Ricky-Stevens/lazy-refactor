@@ -9,6 +9,7 @@ import * as z from "zod";
 import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from "../engine/cross-ref.js";
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
+import { clearFileCache } from "../engine/files.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
@@ -23,6 +24,7 @@ import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js
 async function resolveScanContext(scanPath, projectPath) {
   const resolvedPath = await validateScanPath(scanPath);
   const config = await readConfig(projectPath);
+  clearFileCache();
   const detected = await detectLanguages(resolvedPath);
   return { resolvedPath, config, langs: detected.languages };
 }
@@ -79,6 +81,7 @@ export function registerFocusedScanTools(server, projectPath) {
       try {
         const resolvedPath = await validateScanPath(scanPath);
         const config = await readConfig(projectPath);
+        clearFileCache();
         const findings = await scanDuplicates(resolvedPath, {
           minTokens,
           similarity,

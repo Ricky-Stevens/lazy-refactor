@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   detectLanguage,
@@ -7,7 +6,7 @@ import {
   isEntryPoint,
   isTestFile,
 } from "./cross-ref.js";
-import { collectFiles } from "./files.js";
+import { collectFiles, readFilesBatched } from "./files.js";
 
 // ---------------------------------------------------------------------------
 // Check 13 — Over-engineering
@@ -209,6 +208,7 @@ function checkSingleImplInterfaces(file, content, language, fileContents, findin
  */
 export async function scanOverEngineering(path, options = {}) {
   const files = await collectFiles(path, options);
+  const contents = await readFilesBatched(files);
   const findings = [];
 
   const fileContents = new Map();
@@ -216,15 +216,9 @@ export async function scanOverEngineering(path, options = {}) {
   const fileExports = new Map();
   const fileImportedSymbols = new Map();
 
-  for (const file of files) {
+  for (const [file, content] of contents) {
     const language = detectLanguage(file);
     if (!language) continue;
-    let content;
-    try {
-      content = await readFile(file, "utf8");
-    } catch {
-      continue;
-    }
     fileContents.set(file, content);
     fileLanguages.set(file, language);
     fileExports.set(file, extractExports(content, language));

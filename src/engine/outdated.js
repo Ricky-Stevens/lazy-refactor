@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import outdatedPatterns from "../rules/outdated-patterns.js";
 import { tryRead } from "./detect.js";
-import { collectFiles } from "./files.js";
+import { collectFiles, readFilesBatched } from "./files.js";
 
 /** Build a standard outdated-pattern finding object. */
 function makeFinding(entry, locationFile, confidence) {
@@ -21,11 +21,10 @@ function makeFinding(entry, locationFile, confidence) {
   };
 }
 
-/** Collect and concatenate source file contents for a given language. */
 async function readSources(projectPath, language) {
   const files = await collectFiles(projectPath, { languages: [language] });
-  const sources = await Promise.all(files.map((f) => readFile(f, "utf8").catch(() => "")));
-  return sources.join("\n");
+  const contents = await readFilesBatched(files);
+  return [...contents.values()].join("\n");
 }
 
 /** Test an entry's detectPattern against combined source; returns true on match. */
@@ -196,14 +195,21 @@ async function checkPython(projectPath, findings) {
  * @param {string[]} languages  Detected language list
  * @returns {Promise<Array>}    Findings with check: 'outdated-pattern'
  */
-export async function checkOutdatedDeps(projectPath, languages) {
+async function runLangCheck(fn, projectPath) {
   const findings = [];
-
-  if (languages.includes("typescript")) await checkJavaScript(projectPath, findings);
-  if (languages.includes("go")) await checkGo(projectPath, findings);
-  if (languages.includes("csharp")) await checkCSharp(projectPath, findings);
-  if (languages.includes("java")) await checkJava(projectPath, findings);
-  if (languages.includes("python")) await checkPython(projectPath, findings);
-
+  await fn(projectPath, findings);
   return findings;
+}
+
+export async function checkOutdatedDeps(projectPath, languages) {
+  const tasks = [];
+
+  if (languages.includes("typescript")) tasks.push(runLangCheck(checkJavaScript, projectPath));
+  if (languages.includes("go")) tasks.push(runLangCheck(checkGo, projectPath));
+  if (languages.includes("csharp")) tasks.push(runLangCheck(checkCSharp, projectPath));
+  if (languages.includes("java")) tasks.push(runLangCheck(checkJava, projectPath));
+  if (languages.includes("python")) tasks.push(runLangCheck(checkPython, projectPath));
+
+  const results = await Promise.all(tasks);
+  return results.flat();
 }

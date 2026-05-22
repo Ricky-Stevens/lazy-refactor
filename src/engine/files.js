@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 export const LANGUAGE_EXTENSIONS = {
@@ -36,18 +36,20 @@ export const SKIP_DIRS = new Set([
  * @param {string} pattern
  * @returns {RegExp}
  */
+const _globCache = new Map();
+
 export function globToRegex(pattern) {
-  // First expand brace alternation `{a,b}` into a regex group `(a|b)` with
-  // the contents already escaped.
+  const cached = _globCache.get(pattern);
+  if (cached) return cached;
+
   const expanded = pattern.replace(/\{([^}]+)\}/g, (_, inner) => {
     const alts = inner.split(",").map((s) => s.trim());
     return `(${alts.map((a) => a.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
   });
 
-  // Now walk character-by-character. The `(`, `)`, and `|` produced by the
-  // brace expansion above must pass through untouched; every other char is
-  // either a glob wildcard or a literal we escape.
-  return new RegExp(`^${buildRegexString(expanded)}$`);
+  const rx = new RegExp(`^${buildRegexString(expanded)}$`);
+  _globCache.set(pattern, rx);
+  return rx;
 }
 
 /**
@@ -84,17 +86,16 @@ function buildRegexString(expanded) {
 }
 
 /**
- * Determine whether a file path matches any of the exclude patterns.
- * @param {string[]} excludePatterns
- * @param {string} rel - relative path from the scan root
- * @param {string} name - bare filename
- * @returns {boolean}
+ * Precompile an array of glob patterns into regexes for repeated matching.
+ * @param {string[]} patterns
+ * @returns {RegExp[]}
  */
-function isExcluded(excludePatterns, rel, name) {
-  return excludePatterns.some((pattern) => {
-    const rx = globToRegex(pattern);
-    return rx.test(rel) || rx.test(name);
-  });
+export function compileExcludes(patterns) {
+  return patterns.map((p) => globToRegex(p));
+}
+
+function isExcluded(compiledPatterns, rel, name) {
+  return compiledPatterns.some((rx) => rx.test(rel) || rx.test(name));
 }
 
 /**
@@ -119,13 +120,26 @@ async function pushSymlinkIfFile(full, results) {
  * @param {string[]} [options.languages]
  * @returns {Promise<string[]>}
  */
+const _fileListCache = new Map();
+
+export function clearFileCache() {
+  _fileListCache.clear();
+}
+
 export async function collectFiles(dir, options = {}) {
   const { exclude = [], languages } = options;
-  const results = [];
 
-  const allowedExts = languages
-    ? languages.flatMap((l) => LANGUAGE_EXTENSIONS[l] ?? [])
-    : Object.values(LANGUAGE_EXTENSIONS).flat();
+  const cacheKey = `${dir}|${JSON.stringify(exclude)}|${languages ? languages.join(",") : ""}`;
+  const cached = _fileListCache.get(cacheKey);
+  if (cached) return [...cached];
+
+  const results = [];
+  const compiledExcludes = compileExcludes(exclude);
+  const allowedExts = new Set(
+    languages
+      ? languages.flatMap((l) => LANGUAGE_EXTENSIONS[l] ?? [])
+      : Object.values(LANGUAGE_EXTENSIONS).flat(),
+  );
 
   async function walk(current) {
     let entries;
@@ -134,31 +148,62 @@ export async function collectFiles(dir, options = {}) {
     } catch {
       return;
     }
+    const dirs = [];
     for (const entry of entries) {
       if (entry.isDirectory() && (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)))
         continue;
 
       const full = join(current, entry.name);
 
-      // Skip worktree directories created by plugins (e.g. lazy-dev).
       if (entry.isDirectory() && /worktree/i.test(full)) continue;
 
       const rel = full.slice(dir.length + 1);
 
-      if (isExcluded(exclude, rel, entry.name)) continue;
+      if (compiledExcludes.length > 0 && isExcluded(compiledExcludes, rel, entry.name)) continue;
 
       if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && allowedExts.includes(extname(entry.name))) {
+        dirs.push(full);
+      } else if (entry.isFile() && allowedExts.has(extname(entry.name))) {
         results.push(full);
-      } else if (entry.isSymbolicLink() && allowedExts.includes(extname(entry.name))) {
-        // Follow symlinks only when they resolve to a regular file. We do not
-        // follow directory symlinks because they can introduce cycles.
+      } else if (entry.isSymbolicLink() && allowedExts.has(extname(entry.name))) {
         await pushSymlinkIfFile(full, results);
       }
+    }
+    const DIR_CONCURRENCY = 16;
+    for (let j = 0; j < dirs.length; j += DIR_CONCURRENCY) {
+      await Promise.all(dirs.slice(j, j + DIR_CONCURRENCY).map((d) => walk(d)));
     }
   }
 
   await walk(dir);
-  return results;
+  _fileListCache.set(cacheKey, results);
+  return [...results];
+}
+
+const BATCH_SIZE = 64;
+
+/**
+ * Read multiple files concurrently in batches.
+ * @param {string[]} files
+ * @param {number} [concurrency]
+ * @returns {Promise<Map<string, string>>} file path -> content (skips unreadable)
+ */
+export async function readFilesBatched(files, concurrency = BATCH_SIZE) {
+  const contents = new Map();
+  for (let i = 0; i < files.length; i += concurrency) {
+    const batch = files.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(async (f) => {
+        try {
+          return [f, await readFile(f, "utf8")];
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const r of results) {
+      if (r) contents.set(r[0], r[1]);
+    }
+  }
+  return contents;
 }

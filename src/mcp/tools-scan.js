@@ -10,6 +10,7 @@ import * as z from "zod";
 import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from "../engine/cross-ref.js";
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
+import { clearFileCache } from "../engine/files.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
@@ -71,67 +72,90 @@ function filterDisabledChecks(findings, config) {
  */
 async function collectFindings(resolvedPath, focus, config, languages, exclude) {
   const rules = buildRules(languages);
-  const allFindings = [];
+  const tasks = [];
 
   if (focus.includes("duplicates")) {
-    const dupes = await scanDuplicates(resolvedPath, {
-      minTokens: config.thresholds.duplicateMinTokens,
-      similarity: config.thresholds.duplicateSimilarity,
-      exclude,
-      languages,
-    });
-    allFindings.push(
-      ...dupes.map((f) => (f.check === "duplicate-cluster" ? mapCluster(f) : mapDupe(f))),
+    tasks.push(
+      scanDuplicates(resolvedPath, {
+        minTokens: config.thresholds.duplicateMinTokens,
+        similarity: config.thresholds.duplicateSimilarity,
+        exclude,
+        languages,
+      }).then((dupes) =>
+        dupes.map((f) => (f.check === "duplicate-cluster" ? mapCluster(f) : mapDupe(f))),
+      ),
     );
   }
 
   if (focus.includes("dead-code")) {
-    const dead = await scanDeadCode(resolvedPath, {}, { exclude, languages });
-    allFindings.push(...dead.map((f) => mapDeadExport(f, resolvedPath)));
-
-    const unusedDeps = await scanUnusedDeps(resolvedPath, { exclude });
-    allFindings.push(...unusedDeps.map((f) => mapUnusedDep(f)));
-
-    const unusedImports = await scanUnusedImports(resolvedPath, { exclude, languages });
-    allFindings.push(...unusedImports.map((f) => mapUnusedImport(f, resolvedPath)));
+    tasks.push(
+      Promise.all([
+        scanDeadCode(resolvedPath, {}, { exclude, languages }),
+        scanUnusedDeps(resolvedPath, { exclude }),
+        scanUnusedImports(resolvedPath, { exclude, languages }),
+      ]).then(([dead, unusedDeps, unusedImports]) => [
+        ...dead.map((f) => mapDeadExport(f, resolvedPath)),
+        ...unusedDeps.map((f) => mapUnusedDep(f)),
+        ...unusedImports.map((f) => mapUnusedImport(f, resolvedPath)),
+      ]),
+    );
   }
 
   if (focus.includes("metrics")) {
-    const { findings: metricFindings } = await computeMetrics(resolvedPath, {
-      maxFileLines: config.thresholds.maxFileLines,
-      maxComplexity: config.thresholds.maxComplexity,
-      maxNesting: config.thresholds.maxNesting,
-      maxExportsPerFile: config.thresholds.maxExportsPerFile,
-      maxImportsPerFile: config.thresholds.maxImportsPerFile,
-      languages,
-      exclude,
-    });
-    allFindings.push(...metricFindings.map((f) => mapMetric(f)));
+    tasks.push(
+      computeMetrics(resolvedPath, {
+        maxFileLines: config.thresholds.maxFileLines,
+        maxComplexity: config.thresholds.maxComplexity,
+        maxNesting: config.thresholds.maxNesting,
+        maxExportsPerFile: config.thresholds.maxExportsPerFile,
+        maxImportsPerFile: config.thresholds.maxImportsPerFile,
+        languages,
+        exclude,
+      }).then(({ findings: metricFindings }) => metricFindings.map((f) => mapMetric(f))),
+    );
   }
 
   if (focus.includes("patterns")) {
-    const patternFindings = await scanPatterns(resolvedPath, rules, { exclude, languages });
-    allFindings.push(...patternFindings.map((f) => mapPattern(f)));
+    tasks.push(
+      scanPatterns(resolvedPath, rules, { exclude, languages }).then((pf) =>
+        pf.map((f) => mapPattern(f)),
+      ),
+    );
   }
 
   if (focus.includes("inconsistent-patterns")) {
-    const inconsistentFindings = await scanInconsistentPatterns(resolvedPath, {
-      exclude,
-      languages,
-    });
-    allFindings.push(...inconsistentFindings.map((f) => mapInconsistent(f, resolvedPath)));
+    tasks.push(
+      scanInconsistentPatterns(resolvedPath, { exclude, languages }).then((ifs) =>
+        ifs.map((f) => mapInconsistent(f, resolvedPath)),
+      ),
+    );
   }
 
   if (focus.includes("over-engineering")) {
-    const overEngFindings = await scanOverEngineering(resolvedPath, { exclude, languages });
-    allFindings.push(...overEngFindings.map((f) => mapOverEngineering(f, resolvedPath)));
+    tasks.push(
+      scanOverEngineering(resolvedPath, { exclude, languages }).then((oefs) =>
+        oefs.map((f) => mapOverEngineering(f, resolvedPath)),
+      ),
+    );
   }
 
   if (focus.includes("outdated")) {
-    const outdatedFindings = await checkOutdatedDeps(resolvedPath, languages);
-    allFindings.push(...outdatedFindings);
+    tasks.push(checkOutdatedDeps(resolvedPath, languages));
   }
 
+  const settled = await Promise.allSettled(tasks);
+  const allFindings = [];
+  const warnings = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      allFindings.push(...result.value);
+    } else {
+      warnings.push(result.reason?.message ?? String(result.reason));
+    }
+  }
+  if (warnings.length > 0) {
+    allFindings.warnings = warnings;
+  }
   return allFindings;
 }
 
@@ -180,8 +204,10 @@ export function registerRunScan(server, projectPath) {
         const languages = await resolveLanguages(config, options.languages, resolvedPath);
 
         if (isFullScan) await clearFindings(projectPath);
+        clearFileCache();
 
         const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);
+        const engineWarnings = allFindings.warnings;
         const filtered = filterDisabledChecks(allFindings, config);
         const scored = scoreFindings(filtered);
 
@@ -189,7 +215,9 @@ export function registerRunScan(server, projectPath) {
         await addFindings(projectPath, scored, scanId, resolvedPath);
 
         const summary = await getSummary(projectPath);
-        return ok({ scanId, totalFindings: scored.length, summary });
+        const result = { scanId, totalFindings: scored.length, summary };
+        if (engineWarnings?.length > 0) result.warnings = engineWarnings;
+        return ok(result);
       } catch (err) {
         return fail(err);
       }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { globToRegex, SKIP_DIRS } from "./files.js";
+import { compileExcludes, SKIP_DIRS } from "./files.js";
 
 /** @type {boolean|null} */
 let _ripgrepAvailable = null;
@@ -19,13 +19,10 @@ export async function isRipgrepAvailable() {
   return _ripgrepAvailable;
 }
 
-/** Returns true when filePath matches any of the given excludeGlobs. */
-function isExcluded(filePath, excludeGlobs) {
+function isExcluded(filePath, compiledGlobs) {
   const normalised = filePath.replace(/^\.\//, "");
-  return excludeGlobs.some((glob) => {
-    const rx = globToRegex(glob);
-    return rx.test(normalised) || rx.test(normalised.split("/").pop() ?? "");
-  });
+  const base = normalised.split("/").pop() ?? "";
+  return compiledGlobs.some((rx) => rx.test(normalised) || rx.test(base));
 }
 
 /** Extracts file extensions from a filePattern glob (e.g. "**\/*.{ts,js}"). */
@@ -194,6 +191,7 @@ function ruleMatchesLanguageFilter(rule, languages) {
 export async function scanPatterns(path, rules, options = {}) {
   const { exclude: extraExcludes = [], languages = [] } = options;
   const useRipgrep = await isRipgrepAvailable();
+  const compiledExcludes = compileExcludes(extraExcludes);
   const findings = [];
 
   for (const rule of rules) {
@@ -214,7 +212,7 @@ export async function scanPatterns(path, rules, options = {}) {
     for (const line of lines) {
       const parsed = parseLine(line);
       if (!parsed) continue;
-      if (extraExcludes.length > 0 && isExcluded(parsed.file, extraExcludes)) continue;
+      if (compiledExcludes.length > 0 && isExcluded(parsed.file, compiledExcludes)) continue;
       if (antiPatternExcludedFiles.has(parsed.file)) continue;
 
       findings.push({

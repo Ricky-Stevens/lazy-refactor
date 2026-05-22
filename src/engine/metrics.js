@@ -1,5 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { collectFiles } from "./files.js";
+import { collectFiles, readFilesBatched } from "./files.js";
 import { computeFileMetrics } from "./metrics-compute.js";
 
 export { computeFileMetrics, isPythonFile } from "./metrics-compute.js";
@@ -156,6 +155,7 @@ export async function computeMetrics(path, options = {}) {
     languages: languages.length > 0 ? languages : undefined,
   });
 
+  const contents = await readFilesBatched(filePaths);
   const fileMetrics = [];
   const findings = [];
   const thresholds = {
@@ -166,15 +166,7 @@ export async function computeMetrics(path, options = {}) {
     maxImportsPerFile,
   };
 
-  for (const filePath of filePaths) {
-    let content;
-    try {
-      content = await readFile(filePath, "utf8");
-    } catch {
-      // Unreadable file — skip
-      continue;
-    }
-
+  for (const [filePath, content] of contents) {
     const metrics = computeFileMetrics(content, filePath);
     const relativePath = filePath.startsWith(path)
       ? filePath.slice(path.length).replace(/^\//, "")

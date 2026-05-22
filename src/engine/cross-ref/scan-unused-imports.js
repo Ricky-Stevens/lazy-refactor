@@ -1,5 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { collectFiles } from "../files.js";
+import { collectFiles, readFilesBatched } from "../files.js";
 import { detectLanguage, isTestFile } from "./classify.js";
 
 /**
@@ -221,22 +220,16 @@ const LANGUAGE_SCANNERS = {
  */
 export async function scanUnusedImports(path, options = {}) {
   const files = await collectFiles(path, options);
+  const contents = await readFilesBatched(files);
   const findings = [];
 
-  for (const file of files) {
+  for (const [file, content] of contents) {
     if (isTestFile(file)) continue;
     const language = detectLanguage(file);
     if (!language) continue;
 
     const scanFn = LANGUAGE_SCANNERS[language];
     if (!scanFn) continue;
-
-    let content;
-    try {
-      content = await readFile(file, "utf8");
-    } catch {
-      continue;
-    }
 
     const lines = content.split("\n");
     findings.push(...scanFn(lines, file));

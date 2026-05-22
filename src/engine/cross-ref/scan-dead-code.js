@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { collectFiles } from "../files.js";
+import { collectFiles, readFilesBatched } from "../files.js";
 import { detectLanguage, isEntryPoint, isTestFile } from "./classify.js";
 import { extractExports } from "./extract-exports.js";
 import { extractImports } from "./extract-imports.js";
@@ -93,17 +92,12 @@ function checkExport(exp, file, language, fileData, importsByLanguage, baseConfi
  */
 export async function scanDeadCode(path, _rules = {}, options = {}) {
   const files = await collectFiles(path, options);
+  const contents = await readFilesBatched(files);
 
   const fileData = [];
-  for (const file of files) {
+  for (const [file, content] of contents) {
     const language = detectLanguage(file);
     if (!language) continue;
-    let content;
-    try {
-      content = await readFile(file, "utf8");
-    } catch {
-      continue;
-    }
     const exports = extractExports(content, language);
     const imports = extractImports(content, language);
     fileData.push({ file, language, content, exports, imports });
