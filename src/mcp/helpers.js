@@ -24,7 +24,7 @@ const DEFAULT_CONFIG = {
     maxNesting: 4,
     maxExportsPerFile: 10,
     maxImportsPerFile: 15,
-    duplicateMinTokens: 50,
+    duplicateMinTokens: 100,
     duplicateSimilarity: 0.8,
   },
   exclude: ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],

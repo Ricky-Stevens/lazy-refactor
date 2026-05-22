@@ -86,13 +86,13 @@ class EventEmitter {
     expect(findings).toHaveLength(0);
   });
 
-  it("finding shape has required fields", async () => {
+  it("finding shape has required fields including confidence scores", async () => {
     const subDir = join(dir, "dup-shape");
     await mkdir(subDir, { recursive: true });
     await writeFile(join(subDir, "x.js"), makeCodeBlock("a", "b", "a"));
     await writeFile(join(subDir, "y.js"), makeCodeBlock("p", "q", "p"));
 
-    const allFindings = await scanDuplicates(subDir, { minTokens: 10, similarity: 0.7 });
+    const allFindings = await scanDuplicates(subDir, { minTokens: 10, similarity: 0.7, minConfidence: 0 });
     const pairFindings = allFindings.filter((f) => f.check === "duplicate");
     expect(pairFindings.length).toBeGreaterThan(0);
     for (const f of pairFindings) {
@@ -107,6 +107,15 @@ class EventEmitter {
       expect(f.similarity).toBeGreaterThanOrEqual(0);
       expect(f.similarity).toBeLessThanOrEqual(1);
       expect(typeof f.tokenCount).toBe("number");
+      expect(typeof f.confidence).toBe("number");
+      expect(f.confidence).toBeGreaterThanOrEqual(0);
+      expect(f.confidence).toBeLessThanOrEqual(1);
+      expect(typeof f.structuralRatio).toBe("number");
+      expect(typeof f.tokenDiversity).toBe("number");
+      expect(typeof f.category).toBe("string");
+      expect(["extract-function", "extract-and-share", "extract-wrapper", "extract-config"]).toContain(f.category);
+      expect(typeof f.snippet).toBe("string");
+      expect(f.snippet.length).toBeGreaterThan(0);
     }
   });
 
@@ -158,10 +167,13 @@ class EventEmitter {
       expect(f.endLineB).toBeGreaterThanOrEqual(f.startLineB);
     }
 
-    const blockFindings = findings.filter((f) => f.startLineA >= 5 && f.startLineB >= 2);
-    expect(blockFindings.length).toBeGreaterThan(0);
-    for (const f of blockFindings) {
-      expect(Math.abs(f.startLineA - f.startLineB)).toBe(3);
+    // The shared block starts at line 5 in A and line 2 in B.
+    // Overlap suppression may merge it with matching preamble tokens,
+    // so verify the finding *covers* the shared block rather than starting exactly there.
+    const coveringFindings = findings.filter((f) => f.endLineA >= 10 && f.endLineB >= 7);
+    expect(coveringFindings.length).toBeGreaterThan(0);
+    for (const f of coveringFindings) {
+      expect(Math.abs(f.startLineA - f.startLineB)).toBeLessThanOrEqual(3);
     }
   });
 
@@ -224,6 +236,206 @@ class EventEmitter {
       expect(c.representativePair).not.toBeNull();
       expect(typeof c.representativePair.fileA).toBe("string");
       expect(typeof c.representativePair.fileB).toBe("string");
+      expect(typeof c.totalDuplicatedLines).toBe("number");
+      expect(c.totalDuplicatedLines).toBeGreaterThan(0);
+      expect(typeof c.filesAffected).toBe("number");
+      expect(c.filesAffected).toBeGreaterThanOrEqual(1);
+      expect(typeof c.impact).toBe("number");
+      expect(typeof c.category).toBe("string");
+      expect(typeof c.snippet).toBe("string");
+    }
+  });
+
+  it("excludeTests=true skips test files", async () => {
+    const subDir = join(dir, "dup-exclude-tests");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "lib.js"), makeCodeBlock("a", "b", "a"));
+    await writeFile(join(subDir, "lib.test.js"), makeCodeBlock("x", "y", "x"));
+
+    const withTests = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, excludeTests: false, minConfidence: 0 });
+    const withoutTests = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, excludeTests: true, minConfidence: 0 });
+
+    const pairsWith = withTests.filter((f) => f.check === "duplicate");
+    const pairsWithout = withoutTests.filter((f) => f.check === "duplicate");
+
+    expect(pairsWith.length).toBeGreaterThan(0);
+    expect(pairsWithout).toHaveLength(0);
+  });
+
+  it("excludeTests defaults to true", async () => {
+    const subDir = join(dir, "dup-exclude-default");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "mod.js"), makeCodeBlock("a", "b", "a"));
+    await writeFile(join(subDir, "mod.spec.js"), makeCodeBlock("x", "y", "x"));
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+    expect(pairs).toHaveLength(0);
+  });
+
+  it("data-heavy files score low confidence and are filtered by default", async () => {
+    const subDir = join(dir, "dup-data-confidence");
+    await mkdir(subDir, { recursive: true });
+
+    const makeRuleEntry = (id, desc) => `  {
+    id: "${id}",
+    severity: "high",
+    category: "error-handling",
+    description: "${desc}",
+    pattern: "some-pattern-${id}",
+    antiPattern: null,
+    filePattern: "**/*.js",
+    exclude: ["**/test/**"],
+    suggestion: "Fix this issue by doing the right thing.",
+    fixable: true,
+  }`;
+
+    const ruleFileA = `export default [\n${Array.from({ length: 8 }, (_, i) => makeRuleEntry(`rule-a-${i}`, `Rule A ${i}`)).join(",\n")}\n];`;
+    const ruleFileB = `export default [\n${Array.from({ length: 8 }, (_, i) => makeRuleEntry(`rule-b-${i}`, `Rule B ${i}`)).join(",\n")}\n];`;
+
+    await writeFile(join(subDir, "rules-a.js"), ruleFileA);
+    await writeFile(join(subDir, "rules-b.js"), ruleFileB);
+
+    const unfiltered = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const filtered = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+
+    const unfilteredPairs = unfiltered.filter((f) => f.check === "duplicate");
+    const filteredPairs = filtered.filter((f) => f.check === "duplicate");
+
+    expect(unfilteredPairs.length).toBeGreaterThan(0);
+    for (const f of unfilteredPairs) {
+      expect(f.confidence).toBeLessThan(0.5);
+    }
+    expect(filteredPairs).toHaveLength(0);
+  });
+
+  it("logic-heavy duplicates score high confidence and survive filtering", async () => {
+    const subDir = join(dir, "dup-logic-confidence");
+    await mkdir(subDir, { recursive: true });
+
+    await writeFile(join(subDir, "util-a.js"), makeCodeBlock("x", "y", "x"));
+    await writeFile(join(subDir, "util-b.js"), makeCodeBlock("a", "b", "a"));
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+
+    expect(pairs.length).toBeGreaterThan(0);
+    for (const f of pairs) {
+      expect(f.confidence).toBeGreaterThan(0.5);
+      expect(f.structuralRatio).toBeGreaterThan(0.15);
+    }
+  });
+
+  it("minConfidence=0 returns all findings regardless of score", async () => {
+    const subDir = join(dir, "dup-no-filter");
+    await mkdir(subDir, { recursive: true });
+
+    const dataBlock = Array.from({ length: 15 }, (_, i) =>
+      `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`
+    ).join(",\n");
+    const file = `export const data = [\n${dataBlock}\n];`;
+
+    await writeFile(join(subDir, "data-a.js"), file);
+    await writeFile(join(subDir, "data-b.js"), file);
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs.some((f) => f.confidence < 0.5)).toBe(true);
+  });
+
+  it("snippet contains actual source code from side A", async () => {
+    const subDir = join(dir, "dup-snippet");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "s1.js"), makeCodeBlock("alpha", "beta", "alpha"));
+    await writeFile(join(subDir, "s2.js"), makeCodeBlock("foo", "bar", "foo"));
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs[0].snippet).toContain("function");
+    expect(pairs[0].snippet).toContain("return");
+  });
+
+  it("classifies function duplicates as extract-and-share", async () => {
+    const subDir = join(dir, "dup-category-func");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "f1.js"), makeCodeBlock("x", "y", "x"));
+    await writeFile(join(subDir, "f2.js"), makeCodeBlock("a", "b", "a"));
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs[0].category).toBe("extract-and-share");
+  });
+
+  it("classifies data duplicates as extract-config", async () => {
+    const subDir = join(dir, "dup-category-data");
+    await mkdir(subDir, { recursive: true });
+
+    const dataBlock = Array.from({ length: 15 }, (_, i) =>
+      `  { name: "item${i}", value: ${i}, label: "Label ${i}" }`
+    ).join(",\n");
+    const file = `export const data = [\n${dataBlock}\n];`;
+
+    await writeFile(join(subDir, "d1.js"), file);
+    await writeFile(join(subDir, "d2.js"), file);
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7, minConfidence: 0 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs[0].category).toBe("extract-config");
+  });
+
+  it("classifies try/catch duplicates as extract-wrapper", async () => {
+    const subDir = join(dir, "dup-category-wrapper");
+    await mkdir(subDir, { recursive: true });
+
+    const wrapper = (name) => `
+async function ${name}(url) {
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || "Request failed");
+    }
+    return { success: true, data };
+  } catch (error) {
+    console.error("Failed:", error);
+    return { success: false, error: error.message };
+  }
+}`.trim();
+
+    await writeFile(join(subDir, "w1.js"), wrapper("fetchUser"));
+    await writeFile(join(subDir, "w2.js"), wrapper("fetchOrder"));
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const pairs = findings.filter((f) => f.check === "duplicate");
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs[0].category).toBe("extract-wrapper");
+  });
+
+  it("clusters are sorted by impact descending", async () => {
+    const subDir = join(dir, "dup-impact-sort");
+    await mkdir(subDir, { recursive: true });
+
+    const smallBlock = makeCodeBlock("a", "b", "a");
+    const bigBlock = `${makeCodeBlock("x", "y", "x")}\n${makeCodeBlock("p", "q", "p")}`;
+
+    await writeFile(join(subDir, "small1.js"), smallBlock);
+    await writeFile(join(subDir, "small2.js"), smallBlock);
+    await writeFile(join(subDir, "big1.js"), bigBlock);
+    await writeFile(join(subDir, "big2.js"), bigBlock);
+    await writeFile(join(subDir, "big3.js"), bigBlock);
+
+    const findings = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const clusters = findings.filter((f) => f.check === "duplicate-cluster");
+
+    if (clusters.length >= 2) {
+      for (let i = 1; i < clusters.length; i++) {
+        expect(clusters[i - 1].impact).toBeGreaterThanOrEqual(clusters[i].impact);
+      }
     }
   });
 });

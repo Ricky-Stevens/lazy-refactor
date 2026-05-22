@@ -16,7 +16,9 @@ import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
 import { addFindings, getSummary } from "../state/findings.js";
+import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 import {
+  mapCluster,
   mapDeadExport,
   mapDupe,
   mapInconsistent,
@@ -26,7 +28,6 @@ import {
   mapUnusedDep,
   mapUnusedImport,
 } from "./mappers.js";
-import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 
 /**
  * Resolve the languages to scan based on config, an optional override, and auto-detection.
@@ -79,7 +80,9 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
       exclude,
       languages,
     });
-    allFindings.push(...dupes.map((f) => mapDupe(f)));
+    allFindings.push(
+      ...dupes.map((f) => (f.check === "duplicate-cluster" ? mapCluster(f) : mapDupe(f))),
+    );
   }
 
   if (focus.includes("dead-code")) {

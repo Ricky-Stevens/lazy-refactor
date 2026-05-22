@@ -51,17 +51,29 @@ export function registerFocusedScanTools(server, projectPath) {
         "Scan a directory for duplicate code blocks. Returns raw results without persisting. Use run_scan to persist findings.",
       inputSchema: z.object({
         path: z.string().describe("Directory to scan"),
-        minTokens: z.number().optional().describe("Minimum token window size (default 50)"),
+        minTokens: z.number().optional().describe("Minimum token window size (default 100)"),
         similarity: z.number().optional().describe("Minimum similarity ratio 0–1 (default 0.80)"),
+        minConfidence: z
+          .number()
+          .optional()
+          .describe(
+            "Minimum confidence 0–1 to include a finding (default 0.5). Lower values surface more results including data-structure repetition.",
+          ),
+        excludeTests: z
+          .boolean()
+          .optional()
+          .describe("Exclude test files from scanning (default true)"),
       }),
     },
-    async ({ path: scanPath, minTokens, similarity }) => {
+    async ({ path: scanPath, minTokens, similarity, minConfidence, excludeTests }) => {
       try {
         const resolvedPath = await validateScanPath(scanPath);
         const config = await readConfig(projectPath);
         const findings = await scanDuplicates(resolvedPath, {
           minTokens,
           similarity,
+          minConfidence,
+          excludeTests,
           exclude: config.exclude,
         });
         return ok(findings);

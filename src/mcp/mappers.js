@@ -3,11 +3,23 @@
  * finding shape used by the MCP layer.
  */
 
+const CATEGORY_SUGGESTIONS = {
+  "extract-function":
+    "Extract the duplicated block into a named function and call it from both sites.",
+  "extract-and-share":
+    "Move the duplicated function to a shared module and import it where needed.",
+  "extract-wrapper":
+    "Extract the repeated try/catch or setup/teardown into a higher-order wrapper function.",
+  "extract-config": "Extract the repeated data structure into a shared constant or factory.",
+};
+
 export function mapDupe(f) {
+  const refactoringCategory = f.category ?? "extract-function";
   return {
     check: f.check,
     severity: "medium",
     category: "duplication",
+    findingType: "pair",
     locations: [{ file: f.fileA, startLine: f.startLineA, endLine: f.endLineA }],
     description: `Duplicate code block between ${f.fileA} and ${f.fileB}`,
     similarity: f.similarity,
@@ -15,9 +27,44 @@ export function mapDupe(f) {
     fileB: f.fileB,
     startLineB: f.startLineB,
     endLineB: f.endLineB,
-    suggestion: "Extract shared logic into a reusable function or module.",
+    suggestion:
+      CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"],
     fixable: true,
-    confidence: f.similarity,
+    confidence: f.confidence ?? f.similarity,
+    refactoringCategory,
+    structuralRatio: f.structuralRatio,
+    tokenDiversity: f.tokenDiversity,
+    snippet: f.snippet ?? null,
+    language: f.language ?? "common",
+  };
+}
+
+export function mapCluster(f) {
+  const locations = (f.files ?? []).map((r) => ({
+    file: r.file,
+    startLine: r.startLine,
+    endLine: r.endLine,
+  }));
+  const refactoringCategory = f.category ?? "extract-function";
+  return {
+    check: f.check,
+    severity: "medium",
+    category: "duplication",
+    findingType: "cluster",
+    locations,
+    description: `Duplicate pattern across ${f.filesAffected ?? locations.length} files (${f.totalDuplicatedLines ?? 0} duplicated lines, ${f.memberCount ?? locations.length} regions)`,
+    suggestion:
+      CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"],
+    fixable: true,
+    confidence: f.avgSimilarity ?? 0.8,
+    refactoringCategory,
+    impact: f.impact ?? 0,
+    totalDuplicatedLines: f.totalDuplicatedLines ?? 0,
+    filesAffected: f.filesAffected ?? locations.length,
+    memberCount: f.memberCount ?? locations.length,
+    avgSimilarity: f.avgSimilarity,
+    avgTokenCount: f.avgTokenCount,
+    snippet: f.snippet ?? null,
     language: f.language ?? "common",
   };
 }

@@ -4,10 +4,12 @@
 [![codecov](https://codecov.io/gh/Ricky-Stevens/lazy-refactor/graph/badge.svg)](https://codecov.io/gh/Ricky-Stevens/lazy-refactor)
 [![Semgrep](https://img.shields.io/badge/security-semgrep-blue)](https://github.com/Ricky-Stevens/lazy-refactor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.1-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
+[![version](https://img.shields.io/badge/version-0.3.3-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
 
-A Claude Code plugin for deterministic code quality scanning with AI-powered fixes. Point it at a codebase — it finds the problems, scores them, and an AI agent fixes the easy ones while you focus on the hard ones.
+Code with AI at full speed. Clean up after it automatically.
+
+lazy-refactor is a Claude Code plugin that finds and fixes the mess AI-generated code leaves behind -- copy-pasted logic, dead exports, bloated files, inconsistent patterns, deprecated APIs. It scans deterministically (zero LLM tokens), then an AI fixer agent extracts shared functions, removes dead code, and verifies every change with tests.
 
 ## Install
 
@@ -41,36 +43,47 @@ claude --plugin-dir /path/to/lazy-refactor
 
 ---
 
-## What it does
+## The problem
 
-Scans codebases for quality issues using regex-based pattern matching, AST-free metrics, duplicate detection (Rabin-Karp), and cross-reference analysis. Findings are scored, persisted, and fixable via an AI agent that edits code and verifies with tests.
+AI coding assistants are fast but sloppy. They generate working code by completing patterns, not by thinking about architecture. The result:
 
-**Key capabilities:**
-- **Pattern scanning** -- 60+ regex rules across 5 languages targeting error handling, debugging leftovers, security issues, deprecated APIs
-- **Metrics** -- file complexity, nesting depth, export/import counts with language-aware counting
-- **Duplicate detection** -- Rabin-Karp rolling hash with token normalization, intra-file and cross-file, cluster grouping
-- **Dead code** -- cross-reference analysis of exports vs imports with framework-aware entry points
-- **Outdated patterns** -- deprecated API detection with migration guidance (ioutil, moment.js, javax, etc.)
-- **AI fixer** -- Claude reads findings, edits code, runs tests, rolls back on failure
+- The same error-handling block copy-pasted into 8 files instead of a shared utility
+- Functions independently reimplemented across modules because the AI didn't know a shared version existed
+- Dead exports and unused imports accumulating as the AI rewrites sections without cleaning up
+- File complexity creeping past maintainable thresholds as the AI bolts on features
+- Inconsistent approaches to the same concern across different parts of the codebase
 
-## Install
+This is fine while you're moving fast. It's not fine when you need to maintain it.
 
-Requires [Bun](https://bun.sh) v1.3+.
+## How it works
 
-```bash
-bun install
+**Scan** -- deterministic analysis with zero LLM cost. Pattern matching, metrics, Rabin-Karp duplicate detection with structural-entropy scoring, cross-reference analysis for dead code. Findings are scored by confidence and impact so you fix what matters first.
+
+**Fix** -- an AI fixer agent reads each finding, understands the context, makes the minimal extraction or cleanup, runs your test suite, and rolls back if anything breaks. For duplicate code, it classifies the refactoring strategy automatically:
+
+| Category | What the AI found | What the fixer does |
+|---|---|---|
+| `extract-and-share` | Same function written independently in multiple files | Moves to shared module, updates imports |
+| `extract-wrapper` | Repeated try/catch or setup/teardown pattern | Extracts higher-order wrapper function |
+| `extract-function` | Inline logic block duplicated across call sites | Extracts named function, replaces both sites |
+| `extract-config` | Repeated data structures or configuration | Extracts shared constant or factory |
+
+Every fix is verified by your existing test suite. No fix ships without passing tests.
+
+## Quick start
+
 ```
-
-## Usage
-
-This is a Claude Code MCP plugin. Install it by placing the `.claude-plugin/` directory in a project, or point Claude Code at the manifest.
+/lazy-refactor:scan .
+/lazy-refactor:report
+/lazy-refactor:fix all
+```
 
 ### Slash commands
 
 | Command | Description |
 |---|---|
-| `/lazy-refactor:scan [path]` | Run quality scans on the codebase |
-| `/lazy-refactor:fix <id\|all\|critical\|high>` | Apply fixes (filters by `fixable: true` for bulk targets; ID bypasses filter) |
+| `/lazy-refactor:scan [path]` | Scan the codebase for quality issues |
+| `/lazy-refactor:fix <id\|all\|critical\|high>` | Fix findings (bulk targets filter by `fixable: true`) |
 | `/lazy-refactor:report [--severity=high] [--language=go]` | Show findings from last scan |
 | `/lazy-refactor:status` | Show current scan and fix state |
 
@@ -81,6 +94,16 @@ This is a Claude Code MCP plugin. Install it by placing the `.claude-plugin/` di
 **State:** `get_findings`, `get_finding`, `update_finding`, `clear_findings`, `get_summary`
 
 **Config:** `get_config`, `update_config`
+
+## What it catches
+
+- **Duplicate logic** -- Rabin-Karp token matching with confidence scoring that distinguishes real copy-paste from structural repetition (config arrays, rule definitions). Includes source snippets and refactoring category hints so the fixer acts immediately.
+- **Dead code** -- unused exports, orphan dependencies, unused imports via cross-reference analysis with framework-aware entry points
+- **Complexity** -- file size, nesting depth, cyclomatic complexity, export/import counts with language-aware thresholds
+- **Anti-patterns** -- 60+ regex rules across 5 languages: error handling gaps, debugging leftovers, security issues, deprecated APIs
+- **Inconsistent patterns** -- different approaches to the same concern across the codebase
+- **Over-engineering** -- unnecessary abstractions, pass-through wrappers, low-fan-in indirection
+- **Outdated dependencies** -- deprecated API detection with specific migration paths (moment to dayjs, ioutil to io, javax to jakarta)
 
 ## Configuration
 
@@ -94,7 +117,7 @@ Create `.lazy-refactor.json` in the project root:
     "maxNesting": 4,
     "maxExportsPerFile": 10,
     "maxImportsPerFile": 15,
-    "duplicateMinTokens": 50,
+    "duplicateMinTokens": 100,
     "duplicateSimilarity": 0.80
   },
   "exclude": ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],
@@ -103,41 +126,25 @@ Create `.lazy-refactor.json` in the project root:
 }
 ```
 
+## Supported languages
+
+| Language | Patterns | Metrics | Duplicates | Dead code | Notes |
+|---|---|---|---|---|---|
+| TypeScript/JavaScript | Full | Full | Full | Full | Primary target |
+| Go | Full | Full | Full | Full | Go-aware metrics and grep-based cross-ref |
+| Python | Full | Full | Full | Full | Indent-aware nesting, decorator-aware scoring |
+| C# | Full | Full | Full | Partial | Namespace `using` limits cross-ref confidence |
+| Java | Full | Full | Full | Full | javax-to-jakarta migration support |
+
 ## Development
 
+Requires [Bun](https://bun.sh) v1.3+.
+
 ```bash
+bun install
 bun test          # run all tests
 bun run lint      # biome check
 bun run format    # biome format
-```
-
-## Supported Languages
-
-| Language | Patterns | Metrics | Duplicates | Cross-ref / Dead Code | Notes |
-|---|---|---|---|---|---|
-| TypeScript/JavaScript | Full | Full | Full | Full | Primary language; highest coverage |
-| Go | Full | Full (Go-aware counting) | Full | Full | Grep-based cross-referencing |
-| Python | Full | Full (indent-aware) | Full | Full | Decorator-aware confidence scoring |
-| C# | Full | Full | Full | Partial (confidence 0.7) | Grep-based cross-ref due to namespace `using` directives |
-| Java | Full | Full | Full | Full | javax-to-jakarta migration support |
-
-## Architecture
-
-```
-src/
-  engine/         Deterministic analysis (no LLM calls)
-    cross-ref.js    Dead code, unused imports, over-engineering
-    duplicates.js   Rabin-Karp duplicate detection with clustering
-    files.js        Shared file utilities (LANGUAGE_EXTENSIONS, collectFiles)
-    metrics.js      Complexity, nesting, size metrics
-    pattern-scanner.js  Regex pattern matching via ripgrep/grep
-  mcp/
-    server.js       MCP server entry point (15 tools)
-  rules/            Pattern rule data files (one per language)
-  scoring/          Finding prioritisation
-  state/            JSON persistence for findings
-agents/             AI agent prompts (scanner, fixer, assessor)
-commands/           Slash command definitions
 ```
 
 ## License

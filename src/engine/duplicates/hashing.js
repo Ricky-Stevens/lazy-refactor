@@ -81,18 +81,19 @@ function buildHashTable(hashMaps) {
   return table;
 }
 
+const MAX_BUCKET_SIZE = 500;
+
 /** Enumerate all non-overlapping duplicate pairs from the hash table. */
 function collectPairs(table, windowSize) {
   const pairs = [];
   const seen = new Set();
 
   for (const entries of table.values()) {
-    if (entries.length < 2) continue;
+    if (entries.length < 2 || entries.length > MAX_BUCKET_SIZE) continue;
     for (let i = 0; i < entries.length; i++) {
       for (let j = i + 1; j < entries.length; j++) {
         const a = entries[i];
         const b = entries[j];
-        // Same-file: require non-overlapping windows to avoid self-matches.
         if (a.file === b.file && Math.abs(a.startIndex - b.startIndex) < windowSize) continue;
         const key = `${a.file}:${a.startIndex}-${b.file}:${b.startIndex}`;
         if (seen.has(key)) continue;
