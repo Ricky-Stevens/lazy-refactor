@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { LANGUAGE_EXTENSIONS } from "./files.js";
+import { LANGUAGE_EXTENSIONS, SKIP_DIRS } from "./files.js";
 
 // Reverse map: extension → language, first definition wins. `typescript` is listed
 // before `javascript` in LANGUAGE_EXTENSIONS, so .js/.jsx resolve to typescript
@@ -14,16 +14,9 @@ const EXT_TO_LANGUAGE = (() => {
   return map;
 })();
 
-const SAMPLE_SKIP_DIRS = new Set([
-  "node_modules",
-  "dist",
-  "build",
-  ".next",
-  "vendor",
-  "coverage",
-  "out",
-  "target",
-]);
+// Reuse the engine's canonical skip set (node_modules/build/coverage/out/etc.) so
+// extension sampling and the actual scan walk never disagree about what's source.
+const SAMPLE_SKIP_DIRS = SKIP_DIRS;
 const SAMPLE_MAX_DEPTH = 5;
 const SAMPLE_MAX_FILES = 2000;
 

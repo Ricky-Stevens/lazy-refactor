@@ -4,6 +4,7 @@ import { collectFiles, readFilesBatched } from "../files.js";
 import { detectLanguage, isEntryPoint, isTestFile } from "./classify.js";
 import { extractExports } from "./extract-exports.js";
 import { extractImports } from "./extract-imports.js";
+import { computeReachableFiles } from "./reachability.js";
 
 /**
  * Return a Set of absolute file paths that were added to git within the last `days` days.
@@ -148,9 +149,14 @@ export async function scanDeadCode(path, _rules = {}, options = {}) {
   // pivot debris left over from abandoned AI-assisted refactors.
   const recentFiles = await getRecentlyAddedFiles(path, 30);
 
+  // Files whose exports are reachable via an `export *` barrel or dynamic
+  // import() are exempt — their symbols are consumed without ever appearing in a
+  // named import, so flagging (and deleting) them would break live code.
+  const reachable = computeReachableFiles(fileData);
+
   const findings = [];
   for (const { file, language, content, exports } of fileData) {
-    if (isEntryPoint(file) || isTestFile(file)) continue;
+    if (isEntryPoint(file) || isTestFile(file) || reachable.has(file)) continue;
 
     let baseConfidence = language === "python" ? 0.6 : 0.9;
     if (recentFiles.has(file)) baseConfidence = Math.min(1, baseConfidence + 0.05);

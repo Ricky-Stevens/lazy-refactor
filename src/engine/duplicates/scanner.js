@@ -4,6 +4,12 @@ import { collectFiles } from "../files.js";
 import { clusterDuplicates } from "./clustering.js";
 import { findMatches, rollingHash, verifyMatch } from "./hashing.js";
 import {
+  INTRA_CONTAINER_CAP,
+  INTRA_CONTAINER_MAX_DIVERSITY,
+  INTRA_CONTAINER_MAX_STRUCTURAL,
+  sharesEnclosingContainer,
+} from "./intra-container.js";
+import {
   classifyRefactoring,
   computeRegionDensities,
   computeStructuralRatio,
@@ -253,6 +259,12 @@ export async function scanDuplicates(path, options = {}) {
 
     if (finding.endLineA - finding.startLineA + 1 < minLines) continue;
 
+    // Same-file repetition fully nested in one container is intra-structure, not
+    // extractable duplication — flag it so its confidence is capped below.
+    if (fileA === fileB && sharesEnclosingContainer(dataA.normalised, startA, startB + extent)) {
+      finding.intraContainer = true;
+    }
+
     if (!covered.has(pairKey)) covered.set(pairKey, []);
     covered.get(pairKey).push({ startA, endA: startA + extent, startB, endB: startB + extent });
 
@@ -265,6 +277,18 @@ export async function scanDuplicates(path, options = {}) {
     const keyB = `${f.fileB}:${f.startLineB}-${f.endLineB}`;
     const density = Math.max(densities.get(keyA) || 1, densities.get(keyB) || 1);
     f.confidence = scoreConfidence(f.structuralRatio, f.tokenDiversity, density, f.similarity);
+    // Cap ONLY data-like intra-structure repetition — both structural ratio AND
+    // token diversity must read as data. Real logic copy-paste inside one container
+    // (even straight-line assignment code, which has a low structural ratio) keeps
+    // high diversity and stays at full confidence — it's extractable, which is
+    // exactly what the tool is here to surface.
+    if (f.intraContainer) {
+      const dataLike =
+        f.structuralRatio < INTRA_CONTAINER_MAX_STRUCTURAL &&
+        f.tokenDiversity < INTRA_CONTAINER_MAX_DIVERSITY;
+      if (dataLike) f.confidence = Math.min(f.confidence, INTRA_CONTAINER_CAP);
+      delete f.intraContainer;
+    }
   }
 
   const findings = rawFindings.filter((f) => f.confidence >= minConfidence);

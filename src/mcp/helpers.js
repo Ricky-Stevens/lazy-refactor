@@ -35,6 +35,14 @@ const DEFAULT_CONFIG = {
     "**/*.min.js",
     "**/*.wasm.js",
     "**/*.d.ts",
+    // Generated coverage/report output (e.g. coverage-merged/, jscpd-report/) is not
+    // first-party source. SKIP_DIRS already nets the exact `coverage`/`out` dirs;
+    // these globs catch the named variants common tools emit. Deliberately NOT a
+    // broad `*-report` glob — that would silently skip a legit source dir like
+    // `incident-report/`. Override-able per project for other tool outputs.
+    "**/coverage*/**",
+    "**/jscpd-report/**",
+    "**/playwright-report/**",
   ],
   disabledChecks: [],
   languages: "auto",

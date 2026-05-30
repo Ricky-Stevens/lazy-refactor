@@ -3,6 +3,19 @@
  * finding shape used by the MCP layer.
  */
 
+/**
+ * Strip the scan-root prefix so a finding's path is stored relative to the project.
+ * Findings from different scanners must agree on path representation or the same
+ * physical file splits into separate `group_findings`/dedup buckets. No-op when
+ * resolvedPath is absent or the path is already relative.
+ * @param {string} file
+ * @param {string} [resolvedPath]
+ * @returns {string}
+ */
+function rel(file, resolvedPath) {
+  return resolvedPath ? file.replace(`${resolvedPath}/`, "") : file;
+}
+
 const CATEGORY_SUGGESTIONS = {
   "extract-function":
     "Extract the duplicated block into a named function and call it from both sites.",
@@ -13,18 +26,20 @@ const CATEGORY_SUGGESTIONS = {
   "extract-config": "Extract the repeated data structure into a shared constant or factory.",
 };
 
-export function mapDupe(f) {
+export function mapDupe(f, resolvedPath) {
   const refactoringCategory = f.category ?? "extract-function";
+  const fileA = rel(f.fileA, resolvedPath);
+  const fileB = rel(f.fileB, resolvedPath);
   return {
     check: f.check,
     severity: "medium",
     category: "duplication",
     findingType: "pair",
-    locations: [{ file: f.fileA, startLine: f.startLineA, endLine: f.endLineA }],
-    description: `Duplicate code block between ${f.fileA} and ${f.fileB}`,
+    locations: [{ file: fileA, startLine: f.startLineA, endLine: f.endLineA }],
+    description: `Duplicate code block between ${fileA} and ${fileB}`,
     similarity: f.similarity,
     tokenCount: f.tokenCount,
-    fileB: f.fileB,
+    fileB,
     startLineB: f.startLineB,
     endLineB: f.endLineB,
     suggestion:
@@ -39,9 +54,9 @@ export function mapDupe(f) {
   };
 }
 
-export function mapCluster(f) {
+export function mapCluster(f, resolvedPath) {
   const locations = (f.files ?? []).map((r) => ({
-    file: r.file,
+    file: rel(r.file, resolvedPath),
     startLine: r.startLine,
     endLine: r.endLine,
   }));

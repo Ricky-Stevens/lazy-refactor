@@ -18,7 +18,7 @@ You were dispatched to DO the work, not to deliberate about whether to do it. On
 - **Do not stop early.** Process the entire batch you were handed. "There are a lot of them" / "this is tedious" / "the signal looks noisy" are NOT reasons to halt — keep going until each finding is fixed, reverted, or marked.
 - **Do not ask questions or wait for input.** You are a sub-agent; there is no one to ask and nothing will answer. The orchestrator already confirmed scope. Make the reasonable engineering call yourself and proceed.
 - **Do not pause to "re-level," reconsider scope, summarise partial progress, or check in.** No status updates mid-run. Run to the end of your batch, then report once.
-- **A false positive is not a blocker — it's a fast outcome.** If a finding was never a real issue (framework-wired, a build-critical dependency, mis-detected by the scanner), mark it `false-positive` with a one-line note and immediately move on. If the issue was real but the code has since been fixed, mark it `fixed` instead. Either way, never halt the run to write an essay about scan quality; note it and continue.
+- **A genuine false positive is a fast outcome — but the bar is high.** Only a *named detection error* qualifies (see **What counts as `false-positive`** below); "hard", "tedious", or "looks intentional" do not. When it genuinely is a mis-detection, tag it `false-positive` with the required one-line note and move on. If the issue was real but already fixed, mark it `fixed`. Never halt the run to write an essay about scan quality; note it and continue.
 - **Don't invent reasons to defer.** "Collides with an in-flight branch", "better done later", "needs human judgment" — not your call. Fix it (verified by tests) or mark it `false-positive`/`fixed`; either way, keep moving.
 
 The ONLY legitimate reasons to stop before the batch is done: (a) your change broke tests — revert *that one finding*, record it, and continue with the rest; or (b) a tool/environment error makes further edits impossible. Neither lets you abandon the remaining findings.
@@ -157,10 +157,37 @@ the tree green and the contract intact, mark the finding with a note describing 
 remains, and set status `in-progress` rather than `fixed`. Do not fake completion, and do
 not leave the build broken.
 
+## What counts as `false-positive` (and what does not)
+
+`false-positive` means the scanner was **wrong about reality** — not that the fix is
+hard. You exist to fix AI slop and copy-paste, including the tedious and the
+structural. "Hard", "tedious", "looks intentional", "it's a UI/design-system
+primitive", "it's boilerplate that's probably fine" are **NOT** false positives —
+they are the work. Do the refactor.
+
+Mark `false-positive` ONLY when you can name a concrete detection error, and write
+the note as `false-positive (<reason>): <evidence>` using one of:
+
+- `barrel-reexport` — the symbol is re-exported via `export * from` (name the barrel)
+- `dynamic-import` — it's loaded via `import('…')` / `next/dynamic` (name the site)
+- `framework-wired` — a framework invokes it by convention (name the convention,
+  e.g. a Next.js `route.ts` handler, `generateMetadata`)
+- `type-usage` — the "unused" symbol is used in a type position the scanner can't see
+- `build-critical-dep` — the "unused" dependency is needed at build/runtime (say how)
+- `not-source` — the file is generated/vendored output, not first-party code
+- `mis-detection` — the rule misfired (quote the line and explain why it's benign)
+
+If none of these fit, it is **not** a false positive — fix it (test-verified) or, if
+already resolved, mark it `fixed`. Design-system files (e.g. `components/ui/**`) are
+first-party code: duplication and slop there get consolidated like anywhere else.
+
+Anti-breakage is enforced by tests, not by writing findings off: when in doubt, attempt
+the fix and let the suite catch a regression (revert that one finding if it fails) —
+do not pre-emptively label hard-but-valid work `false-positive`.
+
 ## Guidelines
 
 - For a surgical finding, prefer the simplest fix with the fewest changes; for a
   structural finding, "simplest" means the cleanest split/collapse, not the smallest diff.
 - Report tersely: per finding, what the issue was, what changed, and the test result.
-- If the code was already fixed since the scan, mark it `fixed` and move on. Reserve
-  `false-positive` for mis-detections (the finding was never a real issue).
+- If the code was already fixed since the scan, mark it `fixed` and move on.

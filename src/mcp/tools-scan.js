@@ -118,7 +118,9 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
         exclude,
         languages,
       }).then((dupes) =>
-        dupes.map((f) => (f.check === "duplicate-cluster" ? mapCluster(f) : mapDupe(f))),
+        dupes.map((f) =>
+          f.check === "duplicate-cluster" ? mapCluster(f, resolvedPath) : mapDupe(f, resolvedPath),
+        ),
       ),
     );
   }

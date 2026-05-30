@@ -93,6 +93,10 @@ const rules = [
       "**/*.env*",
       "**/*.config.*",
       "**/*.md",
+      // A URL already centralised in a constants module IS the extraction this rule
+      // asks for — flagging it there is a false positive, not slop.
+      "**/constants.*",
+      "**/constants/**",
       "**/node_modules/**",
       "**/vendor/**",
     ],
@@ -110,7 +114,20 @@ const rules = [
     pattern: "(?:/usr/|/home/|/var/|/tmp/|/etc/|[A-Z]:\\\\\\\\)",
     antiPattern: null,
     filePattern: "**/*.{ts,tsx,js,jsx,go,py,cs,java}",
-    exclude: ["**/node_modules/**", "**/vendor/**"],
+    // Test fixtures, config, and constants modules legitimately hold absolute
+    // paths; scripts are NOT excluded (a hardcoded path there is genuinely fixable).
+    exclude: [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/*_test.go",
+      "**/__tests__/**",
+      "**/*.d.ts",
+      "**/*.config.*",
+      "**/constants.*",
+      "**/constants/**",
+      "**/node_modules/**",
+      "**/vendor/**",
+    ],
     suggestion:
       "Replace hardcoded paths with environment variables, configuration values, or path-building utilities so the code works across environments.",
     fixable: true,

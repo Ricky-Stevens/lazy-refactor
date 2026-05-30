@@ -20,7 +20,12 @@ export const ALL_SOURCE_EXTENSIONS = new Set(Object.values(LANGUAGE_EXTENSIONS).
 // and metrics. Centralized here so both engines inherit the cap via collectFiles.
 export const MAX_FILE_BYTES = 1_000_000;
 
-// Common non-source directories that should never be scanned.
+// Common non-source directories that should never be scanned. Includes generated
+// test-coverage and build-cache output (coverage/out/.nyc_output/.turbo/.cache):
+// these are not first-party source, so scanning them only produces noise
+// (duplication/metrics findings in generated bundles). This set is the always-on
+// safety net — shared with the language detector (detect.js) so the two can't
+// drift — and is independent of .gitignore, which catches the rest.
 export const SKIP_DIRS = new Set([
   "node_modules",
   ".git",
@@ -35,6 +40,11 @@ export const SKIP_DIRS = new Set([
   ".gradle",
   "venv",
   ".venv",
+  "coverage",
+  "out",
+  ".nyc_output",
+  ".turbo",
+  ".cache",
 ]);
 
 /**
