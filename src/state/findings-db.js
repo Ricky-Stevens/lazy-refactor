@@ -22,7 +22,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const DIR_NAME = ".lazy-refactor";
@@ -65,10 +65,22 @@ CREATE TABLE IF NOT EXISTS findings (
 -- do NOT satisfy the rowid ordering; this one is load-bearing for the hot path.
 CREATE INDEX IF NOT EXISTS idx_findings_run      ON findings(run_id);
 CREATE INDEX IF NOT EXISTS idx_findings_status   ON findings(run_id, status);
-CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(run_id, severity);
-CREATE INDEX IF NOT EXISTS idx_findings_category ON findings(run_id, category);
+-- severity/category carry a trailing status column so summary()'s
+-- status != 'stale' predicate is satisfied from the index itself, avoiding a
+-- per-candidate-row main-table lookup that dominates summary() cost at scale.
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(run_id, severity, status);
+CREATE INDEX IF NOT EXISTS idx_findings_category ON findings(run_id, category, status);
 CREATE INDEX IF NOT EXISTS idx_findings_language ON findings(run_id, language);
 CREATE INDEX IF NOT EXISTS idx_findings_check    ON findings(run_id, check_name);
+-- Expression index on each finding's PRIMARY location file, plus a partial index over
+-- multi-location findings (duplicate clusters). Together they let a file filter read only
+-- candidate rows (primary-file matches plus all multi-location findings) instead of the
+-- whole run; findings.js still applies matchesFilter for exact multi-location semantics, so
+-- a cluster matched via a NON-primary file is never dropped. These index the existing JSON
+-- blob (no schema column, no write-path change) and are created on open for existing DBs
+-- too, so there is no migration. JSON1 is built into bun:sqlite, so both always apply.
+CREATE INDEX IF NOT EXISTS idx_findings_locfile  ON findings(run_id, json_extract(data, '$.locations[0].file'));
+CREATE INDEX IF NOT EXISTS idx_findings_multiloc ON findings(run_id) WHERE json_array_length(data, '$.locations') > 1;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 `;
 
@@ -106,7 +118,21 @@ function findingToRow(runId, f) {
 
 /** Reconstruct a finding, overlaying the authoritative status/notes columns. */
 function rowToFinding(row) {
-  const f = JSON.parse(row.data);
+  let f;
+  try {
+    f = JSON.parse(row.data);
+  } catch {
+    // A corrupt/truncated blob (crash mid-write, partial WAL apply) must not make the
+    // whole run unreadable — fall back to a placeholder built from the indexed columns
+    // so the rest of the .map() in selectAll/selectByIds/loadFindings still completes.
+    f = {
+      check: row.check_name ?? undefined,
+      severity: row.severity ?? undefined,
+      category: row.category ?? undefined,
+      language: row.language ?? undefined,
+      _unreadable: true,
+    };
+  }
   f.id = row.id;
   f.status = row.status;
   if (row.notes != null) f.notes = row.notes;
@@ -127,25 +153,8 @@ function inodeOf(path) {
   }
 }
 
-/**
- * Get-or-open the cached SQLite connection at `dbPath`. The cache is keyed by path
- * and inode, so a DB deleted/recreated out-of-band is detected and re-opened. On a
- * fresh open, applies the WAL/PRAGMA setup then `db.exec(SCHEMA)`.
- */
-function openConnection(dbPath) {
-  const cached = connections.get(dbPath);
-  if (cached) {
-    if (cached.ino === inodeOf(dbPath)) return cached.db;
-    try {
-      cached.db.close();
-    } catch {
-      // Best-effort: the underlying file may already be gone.
-    }
-    connections.delete(dbPath);
-  }
-
-  mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath, { create: true });
+// Apply the connection PRAGMAs and create the schema on a freshly-opened handle.
+function applySchema(db) {
   // INCREMENTAL auto-vacuum lets delete_run/prune reclaim freed pages via
   // `PRAGMA incremental_vacuum` instead of the file growing to its high-water mark
   // forever. Must be set before any table is created, so it only takes effect on a
@@ -163,6 +172,73 @@ function openConnection(dbPath) {
   const journalMode = db.query("PRAGMA journal_mode = WAL").get()?.journal_mode;
   if (journalMode !== "wal") db.exec("PRAGMA journal_mode = TRUNCATE");
   db.exec(SCHEMA);
+}
+
+// A non-SQLite or structurally-broken file surfaces as one of these. Detected so a
+// corrupt state.db can self-heal rather than wedging every tool until manual deletion.
+function isCorruptionError(err) {
+  const msg = String(err?.message ?? "");
+  return (
+    err?.code === "SQLITE_CORRUPT" ||
+    err?.code === "SQLITE_NOTADB" ||
+    /not a database|malformed|disk image|file is encrypted/i.test(msg)
+  );
+}
+
+// Move a corrupt db (and its -wal/-shm sidecars) aside instead of deleting it, so the
+// bytes are preserved for forensics while a fresh db takes its place. Best-effort.
+function quarantineCorruptDb(dbPath) {
+  const stamp = Date.now();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const p = `${dbPath}${suffix}`;
+    try {
+      if (existsSync(p)) renameSync(p, `${p}.corrupt-${stamp}`);
+    } catch {
+      // Best-effort: if the rename fails, the fresh open below surfaces a clear error.
+    }
+  }
+}
+
+/**
+ * Get-or-open the cached SQLite connection at `dbPath`. The cache is keyed by path
+ * and inode, so a DB deleted/recreated out-of-band is detected and re-opened. On a
+ * fresh open, applies the WAL/PRAGMA setup then `db.exec(SCHEMA)`. If the file is
+ * corrupt/not-a-database, it is quarantined aside and a fresh DB is created — state
+ * is fully regenerable by re-scanning, so self-healing beats wedging all 25 tools.
+ */
+function openConnection(dbPath) {
+  const cached = connections.get(dbPath);
+  if (cached) {
+    if (cached.ino === inodeOf(dbPath)) return cached.db;
+    try {
+      cached.db.close();
+    } catch {
+      // Best-effort: the underlying file may already be gone.
+    }
+    connections.delete(dbPath);
+  }
+
+  mkdirSync(dirname(dbPath), { recursive: true });
+  let db;
+  try {
+    db = new Database(dbPath, { create: true });
+    applySchema(db);
+  } catch (err) {
+    if (!isCorruptionError(err)) throw err;
+    try {
+      db?.close();
+    } catch {
+      // Best-effort close of the bad handle before quarantining the file.
+    }
+    // stderr only — stdout is the JSON-RPC channel and must not be polluted.
+    process.stderr.write(
+      `lazy-refactor: state database at ${dbPath} is unreadable (${err.message}); ` +
+        "moving it aside as .corrupt-<ts> and starting fresh. Re-scan to repopulate findings.\n",
+    );
+    quarantineCorruptDb(dbPath);
+    db = new Database(dbPath, { create: true });
+    applySchema(db);
+  }
   connections.set(dbPath, { db, ino: inodeOf(dbPath) });
   return db;
 }
@@ -188,7 +264,14 @@ export function reclaimSpace(db) {
 
 export function metaGet(db, key) {
   const row = db.query("SELECT value FROM meta WHERE key = ?").get(key);
-  return row ? JSON.parse(row.value) : null;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    // A corrupt/foreign meta value (e.g. a bare-string activeRunId from an older
+    // writer) is treated as absent rather than wedging all run resolution.
+    return null;
+  }
 }
 
 export function metaSet(db, key, value) {

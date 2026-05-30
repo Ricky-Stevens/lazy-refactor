@@ -3,6 +3,11 @@ import { KEYWORDS } from "./tokenizer-keywords.js";
 // Number literal patterns
 export const NUMBER_RE = /^-?(?:0x[\da-fA-F]+|0b[01]+|0o[0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$/;
 
+// Prefix-anchored variant of NUMBER_RE (no end anchor) used to consume exactly
+// the numeric portion at a position without swallowing following identifiers.
+export const NUMBER_PREFIX_RE =
+  /^-?(?:0[xX][\dA-Fa-f]+|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/;
+
 // String token sentinel emitted whenever a quoted literal is encountered.
 export const STRING_SENTINEL = '"..."';
 
@@ -73,18 +78,19 @@ export function scanIdentifier(content, i, len) {
 }
 
 /**
- * Scan a numeric literal starting at position i.
+ * Scan a numeric literal starting at position i. Consumes exactly the numeric
+ * prefix (hex/binary/octal/decimal with optional fraction and exponent) so that
+ * trailing member access or identifiers (e.g. `1.toFixed`, `0xFF.bar`) are not
+ * swallowed into the number token.
  * @param {string} content
  * @param {number} i
- * @param {number} len
- * @param {string} ch  character at position i
+ * @param {number} _len - unused; kept for signature symmetry with the other scanX helpers
  * @returns {{ token: string, end: number }}
  */
-export function scanNumber(content, i, len, ch) {
-  const start = i;
-  let j = ch === "-" ? i + 1 : i;
-  while (j < len && /[\dA-Fa-fxXbBoO.]/.test(content[j])) j++;
-  return { token: content.slice(start, j), end: j };
+export function scanNumber(content, i, _len) {
+  const m = NUMBER_PREFIX_RE.exec(content.slice(i));
+  if (!m) return { token: content[i], end: i + 1 };
+  return { token: content.slice(i, i + m[0].length), end: i + m[0].length };
 }
 
 /**
@@ -125,7 +131,7 @@ export function scanNextToken(content, i, len, tokens) {
     return end;
   }
   if (/\d/.test(ch) || isNegativeNumberStart(content, i)) {
-    const { token, end } = scanNumber(content, i, len, ch);
+    const { token, end } = scanNumber(content, i, len);
     tokens.push({ token, pos: i });
     return end;
   }

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALL_SOURCE_EXTENSIONS, collectFiles } from "./files.js";
+import { ALL_SOURCE_EXTENSIONS, collectFiles, globToRegex } from "./files.js";
 
 describe("collectFiles", () => {
   let rootDir;
@@ -127,6 +127,27 @@ describe("collectFiles", () => {
       const files = await collectFiles(dir, { exclude: ["**/*.test.*", "**/*.spec.*"] });
       expect(files.length).toBe(1);
       expect(files[0]).toMatch(/src\/app\.ts$/);
+    });
+  });
+
+  // -- file size cap ---------------------------------------------------------
+
+  describe("file size cap", () => {
+    let dir;
+
+    beforeAll(async () => {
+      dir = join(rootDir, "size-cap");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "small.ts"), "export const x = 1;");
+      // Just over MAX_FILE_BYTES (1MB) — should be excluded.
+      await writeFile(join(dir, "huge.ts"), "x".repeat(1_000_001));
+    });
+
+    test("excludes files larger than the byte cap, keeps small ones", async () => {
+      const files = await collectFiles(dir);
+      const names = files.map((f) => f.split("/").pop());
+      expect(names).toContain("small.ts");
+      expect(names).not.toContain("huge.ts");
     });
   });
 
@@ -260,5 +281,79 @@ describe("collectFiles", () => {
       expect(names).not.toContain("suite.ts");
       expect(names).toContain("main.ts");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// globToRegex — literal special chars vs brace alternation
+// ---------------------------------------------------------------------------
+
+describe("globToRegex", () => {
+  test("treats a literal `|` as a literal, not regex alternation", () => {
+    const rx = globToRegex("build|dist");
+    expect(rx.test("build|dist")).toBe(true);
+    expect(rx.test("build")).toBe(false);
+    expect(rx.test("dist")).toBe(false);
+  });
+
+  test("treats literal parentheses as literals (no crash)", () => {
+    const rx = globToRegex("**/foo)bar/**");
+    expect(rx.test("x/foo)bar/y.ts")).toBe(true);
+  });
+
+  test("does not throw on an unbalanced literal paren glob", () => {
+    expect(() => globToRegex("**/a(b/**")).not.toThrow();
+    const rx = globToRegex("**/a(b/**");
+    expect(rx.test("x/a(b/y.ts")).toBe(true);
+  });
+
+  test("still expands `{a,b}` brace alternation", () => {
+    const rx = globToRegex("**/*.{ts,tsx}");
+    expect(rx.test("src/x.ts")).toBe(true);
+    expect(rx.test("src/x.tsx")).toBe(true);
+    expect(rx.test("src/x.go")).toBe(false);
+  });
+});
+
+describe("collectFiles — skipped accumulator", () => {
+  let dir;
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "files-skip-"));
+    await writeFile(join(dir, "ok.ts"), "export const x = 1;");
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("leaves the accumulator empty for a fully-readable tree", async () => {
+    const skipped = [];
+    const files = await collectFiles(dir, { languages: ["typescript"], skipped });
+    expect(files).toHaveLength(1);
+    expect(skipped).toEqual([]);
+  });
+
+  test("records a permission-denied directory (where the OS enforces it)", async () => {
+    const locked = join(dir, "locked");
+    await mkdir(locked);
+    await writeFile(join(locked, "secret.ts"), "export const y = 2;");
+    await chmod(locked, 0o000);
+
+    // Some environments (root, certain WSL/CI mounts) don't enforce dir perms — detect that
+    // so the assertion only runs where the failure mode is real.
+    let enforced = true;
+    try {
+      await readdir(locked);
+      enforced = false;
+    } catch {
+      enforced = true;
+    }
+
+    const skipped = [];
+    await collectFiles(dir, { languages: ["typescript"], skipped, exclude: ["__never__"] });
+    await chmod(locked, 0o755); // restore so cleanup can recurse in
+
+    if (enforced) {
+      expect(skipped.some((s) => s.path.endsWith("locked") && s.code === "EACCES")).toBe(true);
+    }
   });
 });

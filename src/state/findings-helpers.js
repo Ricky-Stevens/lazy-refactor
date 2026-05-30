@@ -52,7 +52,7 @@ export function pickPatch({ status, notes } = {}) {
  * multi-location `file` dimension it alone can express.
  *
  * @param {object} finding
- * @param {{ severity?, category?, status?, language?, check?, file? }} [filter]
+ * @param {{ severity?, category?, status?, language?, check?, file?, minConfidence? }} [filter]
  */
 export function matchesFilter(finding, filter = {}) {
   const match = (value, filterValue) => {
@@ -67,13 +67,18 @@ export function matchesFilter(finding, filter = {}) {
   const fileMatch =
     filter.file == null || (finding.locations ?? []).some((l) => match(l.file, filter.file));
 
+  // Missing confidence defaults to 1, matching the SQL path and prioritizer.js.
+  const confidenceMatch =
+    filter.minConfidence == null || (finding.confidence ?? 1) >= filter.minConfidence;
+
   return (
     match(finding.severity, filter.severity) &&
     match(finding.category, filter.category) &&
     match(status, filter.status) &&
     match(finding.language, filter.language) &&
     match(finding.check, filter.check) &&
-    fileMatch
+    fileMatch &&
+    confidenceMatch
   );
 }
 

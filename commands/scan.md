@@ -17,9 +17,11 @@ Scan the codebase for code quality issues using deterministic analysis and targe
 
 - `path` (optional): Directory or file to scan. Defaults to current working directory.
 - `--focus` (optional): Comma-separated list of scan categories to focus on. Options: `duplicates`, `dead-code`, `metrics`, `patterns`, `inconsistent-patterns`, `over-engineering`, `outdated`. If omitted, all categories are scanned.
-- `--exclude` (optional): Regex pattern for files/directories to exclude from the scan (e.g., `--exclude=node_modules|\.test\.ts`).
+- `--exclude` (optional): Glob pattern(s) to exclude from the scan. Matched against both the file's relative path and its name. Supports `*`, `**`, `?`, and `{a,b}` brace alternation (NOT regex). E.g. `--exclude=node_modules` or `--exclude=**/*.test.ts`.
 
 ## Behavior
+
+> **Just run it.** A bare `/scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Dispatch the scan, let it finish, and report once. Don't stop to ask questions or check in mid-scan.
 
 1. **Parse arguments**: Extract path, focus categories, and exclusion patterns.
 

@@ -67,10 +67,35 @@ export function selectByIds(db, runId, ids) {
   return out;
 }
 
+/**
+ * Candidate rows for a `file` filter, read via index instead of scanning the run:
+ * those whose PRIMARY location file matches (idx_findings_locfile) UNIONed with ALL
+ * multi-location findings (partial idx_findings_multiloc). This is a strict SUPERSET of
+ * the true matches — a cluster matched on a non-primary file has >1 location so it's in
+ * the second branch — so findings.js' matchesFilter still decides exactly; we only shrink
+ * the set of blobs parsed. Ordered by rowid to preserve default (insertion) order.
+ */
+export function selectFileCandidates(db, runId, filter) {
+  const files = Array.isArray(filter.file) ? filter.file : [filter.file];
+  const { where, params } = buildScalarWhere(runId, filter);
+  const ph = files.map(() => "?").join(",");
+  const cols = "SELECT id, status, notes, data, rowid AS _rowid FROM findings";
+  const sql =
+    `${cols} ${where} AND json_extract(data, '$.locations[0].file') IN (${ph})\n` +
+    `UNION\n` +
+    `${cols} ${where} AND json_array_length(data, '$.locations') > 1\n` +
+    `ORDER BY _rowid`;
+  return db
+    .query(sql)
+    .all(...params, ...files, ...params)
+    .map(rowToFinding);
+}
+
 // Build the WHERE clause for a run plus the scalar filter keys (severity/category/
-// language/check/status, plus blob-extracted `fixable`). Stale findings are excluded
-// unless the filter constrains status. The `file` dimension is intentionally left to
-// findings.js#matchesFilter (multi-location semantics — the only JS-side filter).
+// language/check/status, plus blob-extracted `fixable`/`minConfidence`). Stale findings
+// are excluded unless the filter constrains status. The `file` dimension is NOT added here:
+// selectFileCandidates layers the indexed file/multi-location pre-filter on top of this
+// clause, and findings.js#matchesFilter makes the exact multi-location decision in JS.
 function buildScalarWhere(runId, filter) {
   const conds = ["run_id = ?"];
   const params = [runId];
@@ -98,17 +123,37 @@ function buildScalarWhere(runId, filter) {
     );
   }
 
+  // `confidence` also lives in the blob, not a column. A missing confidence defaults
+  // to 1 (matching prioritizer.js), so minConfidence never drops an un-scored finding.
+  if (filter.minConfidence != null) {
+    conds.push("IFNULL(json_extract(data, '$.confidence'), 1) >= ?");
+    params.push(filter.minConfidence);
+  }
+
   return { where: `WHERE ${conds.join(" AND ")}`, params };
 }
 
+// ORDER BY expressions, keyed by the validated `orderBy` enum. Values are fixed
+// SQL fragments (never raw caller input), so interpolation is injection-safe. Each
+// falls back to rowid as a stable tiebreaker so ordering is deterministic.
+const ORDER_EXPRESSIONS = {
+  rowid: "rowid",
+  severity:
+    "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 " +
+    "WHEN 'low' THEN 3 ELSE 4 END, rowid",
+  confidence: "IFNULL(json_extract(data, '$.confidence'), 1) DESC, rowid",
+};
+
 /**
  * Fetch findings narrowed by the scalar filter keys, optionally paginated via SQL
- * LIMIT/OFFSET (so only the requested page is read and parsed, not the whole set).
+ * LIMIT/OFFSET (so only the requested page is read and parsed, not the whole set)
+ * and ordered by `orderBy` (rowid | severity | confidence; default rowid).
  */
-export function selectScalar(db, runId, filter = {}, { limit, offset } = {}) {
+export function selectScalar(db, runId, filter = {}, { limit, offset, orderBy } = {}) {
   const { where, params } = buildScalarWhere(runId, filter);
   const args = [...params];
-  let sql = `${SELECT_COLS} ${where} ORDER BY rowid`;
+  const order = ORDER_EXPRESSIONS[orderBy] ?? ORDER_EXPRESSIONS.rowid;
+  let sql = `${SELECT_COLS} ${where} ORDER BY ${order}`;
   if (limit != null) {
     sql += " LIMIT ?";
     args.push(limit);
@@ -127,6 +172,35 @@ export function selectScalar(db, runId, filter = {}, { limit, offset } = {}) {
 export function countScalar(db, runId, filter = {}) {
   const { where, params } = buildScalarWhere(runId, filter);
   return db.query(`SELECT COUNT(*) AS c FROM findings ${where}`).get(...params).c;
+}
+
+// Columns groupable in pure SQL (no blob parsing). `file` is NOT here — it's
+// multi-location and lives in the blob, so findings.js groups it in JS.
+const GROUPABLE_COLUMNS = {
+  category: "category",
+  check: "check_name",
+  severity: "severity",
+  language: "language",
+  status: "status",
+};
+
+/**
+ * Group findings matching the scalar filter by an indexed column, returning each
+ * group's key, count, and member ids — all in one SQL pass (group_concat), no blob
+ * parsing. `key` is the column name from the lookup, never raw caller input, so the
+ * interpolation is injection-safe. Finding ids contain no commas, so the split is safe.
+ */
+export function groupByColumn(db, runId, filter, by) {
+  const col = GROUPABLE_COLUMNS[by];
+  if (!col) throw new Error(`Cannot group by '${by}' in SQL`);
+  const { where, params } = buildScalarWhere(runId, filter);
+  return db
+    .query(
+      `SELECT ${col} AS k, COUNT(*) AS c, group_concat(id) AS ids
+       FROM findings ${where} GROUP BY ${col} ORDER BY c DESC`,
+    )
+    .all(...params)
+    .map((r) => ({ key: r.k, count: r.c, ids: r.ids ? r.ids.split(",") : [] }));
 }
 
 /** Return the subset of `ids` that exist in the run (chunked for var limits). */
@@ -159,10 +233,22 @@ export function summary(db, runId) {
     bySeverity: fold(groupBy("severity", "AND severity IS NOT NULL")),
     byCategory: fold(groupBy("category", "AND category IS NOT NULL")),
     byStatus: fold(groupBy("status")),
+    // Keyed on the raw `check_name`/`language` values — `byCheck` uses the SQL column
+    // name `check_name`, which is what get_findings filters accept (the public `check`
+    // alias maps to it via the COLUMN/GROUPABLE_COLUMNS lookups).
+    byCheck: fold(groupBy("check_name", "AND check_name IS NOT NULL")),
+    byLanguage: fold(groupBy("language", "AND language IS NOT NULL")),
   };
 }
 
-const EMPTY_SUMMARY = () => ({ totalFindings: 0, bySeverity: {}, byCategory: {}, byStatus: {} });
+const EMPTY_SUMMARY = () => ({
+  totalFindings: 0,
+  bySeverity: {},
+  byCategory: {},
+  byStatus: {},
+  byCheck: {},
+  byLanguage: {},
+});
 
 /**
  * Summaries for ALL runs in a FIXED 4 grouped queries (not 4 per run), so list_runs
@@ -249,12 +335,27 @@ export function markStaleExcept(db, runId, newIds) {
   );
 }
 
-/** Apply per-item status/notes patches within a run. Undefined fields leave columns intact. */
+/**
+ * Apply per-item status/notes patches within a run. Undefined fields leave columns
+ * intact. Patches sharing the same (status, notes) tuple are grouped and routed through
+ * the set-based applyUniformPatch (chunked IN-clause UPDATE), so the common bulk-triage
+ * case (one status across many ids) collapses to a handful of UPDATEs; only genuinely
+ * heterogeneous patches remain multi-statement. COALESCE semantics are unchanged — a
+ * null/undefined status or notes leaves that column intact.
+ */
 export function applyPatches(db, runId, patches) {
-  const stmt = db.query(
-    "UPDATE findings SET status = COALESCE(?, status), notes = COALESCE(?, notes) WHERE run_id = ? AND id = ?",
-  );
-  for (const p of patches) stmt.run(p.status ?? null, p.notes ?? null, runId, p.id);
+  const groups = new Map();
+  for (const p of patches) {
+    const status = p.status ?? null;
+    const notes = p.notes ?? null;
+    const key = `${status ?? " "}|${notes ?? " "}`;
+    const group = groups.get(key);
+    if (group) group.ids.push(p.id);
+    else groups.set(key, { status, notes, ids: [p.id] });
+  }
+  for (const { status, notes, ids } of groups.values()) {
+    applyUniformPatch(db, runId, ids, { status, notes });
+  }
 }
 
 /** Apply ONE shared status/notes patch to many ids in a run — set-based, chunked. */

@@ -1,7 +1,7 @@
 /**
  * Finding-state tool registrations for the lazy-refactor MCP server.
  *
- * Tools: get_findings, get_findings_by_ids, count_findings, get_summary,
+ * Tools: get_findings, get_findings_by_ids, count_findings, group_findings, get_summary,
  *        update_finding, update_findings, prune_findings, clear_findings
  *
  * Reads and writes are id-list based (pass a single-element array for one) — there
@@ -14,6 +14,7 @@ import {
   getFindingsByIds,
   getFindingsPage,
   getSummary,
+  groupFindings,
   pruneFindings,
   updateFinding,
   updateFindings,
@@ -24,6 +25,7 @@ import {
   countSchema,
   emptySchema,
   findingsSchema,
+  groupSchema,
   MAX_BATCH,
   MAX_NOTES,
   pruneSchema,
@@ -54,13 +56,14 @@ function toCompact(f) {
 // ---------------------------------------------------------------------------
 
 function makeFindingsHandler(projectPath) {
-  return async ({ filter, limit, offset, compact }) => {
+  return async ({ filter, limit, offset, compact, orderBy }) => {
     try {
       const effectiveOffset = Math.max(0, offset ?? 0);
       const effectiveLimit = Math.max(0, limit ?? 200);
       const { findings, total } = await getFindingsPage(projectPath, filter ?? {}, {
         limit: effectiveLimit,
         offset: effectiveOffset,
+        orderBy,
       });
       return ok({
         findings: compact ? findings.map(toCompact) : findings,
@@ -137,6 +140,16 @@ function makeCountHandler(projectPath) {
   };
 }
 
+function makeGroupHandler(projectPath) {
+  return async ({ by, filter }) => {
+    try {
+      return ok(await groupFindings(projectPath, filter ?? {}, by ?? "file"));
+    } catch (err) {
+      return fail(err);
+    }
+  };
+}
+
 function makePruneHandler(projectPath) {
   return async ({ status }) => {
     try {
@@ -173,7 +186,7 @@ function makeSummaryHandler(projectPath) {
 // ---------------------------------------------------------------------------
 
 /**
- * Register the 8 finding-state tools on the given McpServer instance.
+ * Register the 9 finding-state tools on the given McpServer instance.
  * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
  * @param {string} projectPath
  */
@@ -208,6 +221,20 @@ export function registerStateTools(server, projectPath) {
   );
 
   server.registerTool(
+    "group_findings",
+    {
+      description:
+        "Group findings matching a filter by a dimension (default 'file'), returning each " +
+        "group's key, count, and member finding ids — WITHOUT the bulky finding bodies. " +
+        "Use this to plan batched work (e.g. one fixer per file) at scale: get the file→ids " +
+        "map in one small call, then fetch each group's details with get_findings_by_ids. " +
+        "Returns { by, groups: [{ key, count, ids }], totalGroups, totalFindings }.",
+      inputSchema: groupSchema,
+    },
+    makeGroupHandler(projectPath),
+  );
+
+  server.registerTool(
     "get_summary",
     {
       description: "Return summary statistics for all persisted findings.",
@@ -219,7 +246,7 @@ export function registerStateTools(server, projectPath) {
   server.registerTool(
     "update_finding",
     {
-      description: "Update the status and/or notes on a single finding.",
+      description: "Update the status (and optionally notes) on a single finding.",
       inputSchema: updateFindingSchema,
     },
     makeUpdateFindingHandler(projectPath),

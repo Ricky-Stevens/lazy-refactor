@@ -1,5 +1,31 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { LANGUAGE_EXTENSIONS } from "./files.js";
+
+// Reverse map: extension → language, first definition wins. `typescript` is listed
+// before `javascript` in LANGUAGE_EXTENSIONS, so .js/.jsx resolve to typescript
+// (matching the rest of the engine, which handles JS under the typescript ruleset).
+const EXT_TO_LANGUAGE = (() => {
+  const map = new Map();
+  for (const [lang, exts] of Object.entries(LANGUAGE_EXTENSIONS)) {
+    if (lang === "common") continue;
+    for (const ext of exts) if (!map.has(ext)) map.set(ext, lang);
+  }
+  return map;
+})();
+
+const SAMPLE_SKIP_DIRS = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  "vendor",
+  "coverage",
+  "out",
+  "target",
+]);
+const SAMPLE_MAX_DEPTH = 5;
+const SAMPLE_MAX_FILES = 2000;
 
 /**
  * Try to read a file relative to a base directory. Returns content or null.
@@ -52,11 +78,9 @@ async function detectRootMarkers(projectPath, languages, markers) {
     try {
       const pkg = JSON.parse(pkgJson);
       const allDeps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
-      if (allDeps.typescript || allDeps["ts-node"] || allDeps.tsx) {
-        markers.typescript = true;
-      } else {
-        markers.javascript = true;
-      }
+      // A package.json always resolves to "typescript" below (the engine handles JS under
+      // the TS ruleset), so only the typescript marker is meaningful — no dead javascript flag.
+      if (allDeps.typescript || allDeps["ts-node"] || allDeps.tsx) markers.typescript = true;
     } catch {
       // treat unparseable package.json as a JS/TS project
     }
@@ -87,8 +111,8 @@ async function detectRootMarkers(projectPath, languages, markers) {
   const slnFiles = await findBySuffix(projectPath, ".sln");
   if (csprojFiles.length > 0 || slnFiles.length > 0) {
     languages.push("csharp");
-    if (csprojFiles.length > 0) markers[csprojFiles[0]] = true;
-    if (slnFiles.length > 0) markers[slnFiles[0]] = true;
+    for (const f of csprojFiles) markers[f] = true;
+    for (const f of slnFiles) markers[f] = true;
   }
 
   const pomXml = await tryRead(projectPath, "pom.xml");
@@ -147,9 +171,50 @@ async function detectSubdirMarkers(projectPath, subdirName, languages, markers) 
   const subSln = await findBySuffix(subdir, ".sln");
   if (subCsproj.length > 0 || subSln.length > 0) {
     addLanguage(languages, "csharp");
-    if (subCsproj.length > 0) markers[`${prefix}${subCsproj[0]}`] = true;
-    if (subSln.length > 0) markers[`${prefix}${subSln[0]}`] = true;
+    for (const f of subCsproj) markers[`${prefix}${f}`] = true;
+    for (const f of subSln) markers[`${prefix}${f}`] = true;
   }
+}
+
+/**
+ * Fallback detection: sample source-file extensions from a bounded recursive walk
+ * and map them back to languages. Marker detection only inspects the root and its
+ * immediate children, so a monorepo whose manifests live under packages/<pkg>/ would
+ * otherwise yield NO languages — making `auto` resolve to an empty set and silently
+ * scan nothing. This guarantees `auto` finds whatever source actually exists.
+ * @param {string} projectPath
+ * @returns {Promise<string[]>}
+ */
+async function sampleLanguagesByExtension(projectPath) {
+  const found = [];
+  let budget = SAMPLE_MAX_FILES;
+
+  async function walk(dir, depth) {
+    if (depth > SAMPLE_MAX_DEPTH || budget <= 0) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable subtree — skip, mirroring collectFiles
+    }
+    for (const entry of entries) {
+      if (budget <= 0) return;
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        if (!SAMPLE_SKIP_DIRS.has(entry.name)) await walk(join(dir, entry.name), depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      budget--;
+      const dot = entry.name.lastIndexOf(".");
+      if (dot < 0) continue;
+      const lang = EXT_TO_LANGUAGE.get(entry.name.slice(dot));
+      if (lang) addLanguage(found, lang);
+    }
+  }
+
+  await walk(projectPath, 0);
+  return found;
 }
 
 /**
@@ -173,6 +238,16 @@ export async function detectLanguages(projectPath) {
     }
   } catch {
     // skip if root readdir fails
+  }
+
+  // Marker detection only looks at the root + immediate children. If that found
+  // nothing (e.g. a monorepo with nested package manifests), fall back to sampling
+  // actual source extensions so `auto` never resolves to an empty, no-op scan.
+  if (languages.length === 0) {
+    for (const lang of await sampleLanguagesByExtension(projectPath)) {
+      addLanguage(languages, lang);
+    }
+    if (languages.length > 0) markers._extensionFallback = true;
   }
 
   return { languages, markers };

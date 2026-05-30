@@ -1,3 +1,5 @@
+import { stripTsComments, stripTypeModifier } from "./ts-text.js";
+
 /**
  * Extract imported symbols/modules from file content for a given language.
  * Returns array of symbol names.
@@ -31,10 +33,12 @@ export function extractImports(content, language) {
 function exportedNames(symbolList) {
   const names = [];
   for (const sym of symbolList.split(",")) {
-    const name = sym
-      .trim()
-      .split(/\s+as\s+/)[0]
-      .trim();
+    const name = stripTypeModifier(
+      sym
+        .trim()
+        .split(/\s+as\s+/)[0]
+        .trim(),
+    );
     if (name && name !== "*") names.push(name);
   }
   return names;
@@ -42,7 +46,10 @@ function exportedNames(symbolList) {
 
 // ─── per-language extractors ──────────────────────────────────────────────────
 
-function extractTypescriptImports(content) {
+function extractTypescriptImports(rawContent) {
+  // Strip comments so imports/re-exports written inside JSDoc @example blocks or
+  // commented-out code don't pollute the cross-ref import set.
+  const content = stripTsComments(rawContent);
   const imports = [];
   const lines = content.split("\n");
 
@@ -111,17 +118,17 @@ function extractTypescriptImports(content) {
     }
   }
 
-  // Second pass over the full file to catch multi-line named imports
-  // like `import {\n  foo,\n  bar,\n} from '...'` which the per-line loop misses.
-  const multiLineRe = /import\s+(?:type\s+)?\{([^}]+)\}\s+from/g;
+  // Second pass over the full file to catch multi-line named imports like
+  // `import {\n  foo,\n  bar,\n} from '...'` that the per-line loop misses, AND
+  // re-exports (`export { Foo } from './x'`): a re-exported symbol is genuinely
+  // used cross-module, so counting it prevents dead-code false positives for
+  // barrel files and page re-exports. (`export * from` can't name symbols, so
+  // it is not covered here.)
+  const multiLineRe = /(?:import|export)\s+(?:type\s+)?\{([^}]+)\}\s+from/g;
   let mlMatch;
   while ((mlMatch = multiLineRe.exec(content)) !== null) {
-    for (const sym of mlMatch[1].split(",")) {
-      const name = sym
-        .trim()
-        .split(/\s+as\s+/)[0]
-        .trim();
-      if (name && !imports.includes(name)) imports.push(name);
+    for (const name of exportedNames(mlMatch[1])) {
+      if (!imports.includes(name)) imports.push(name);
     }
   }
 
@@ -130,13 +137,29 @@ function extractTypescriptImports(content) {
 
 function extractPythonImports(content) {
   const imports = [];
+  let inParenImport = false;
+
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
 
-    // from module import foo, bar
+    // Continuation lines of a parenthesized `from ... import (` block.
+    if (inParenImport) {
+      if (trimmed.includes(")")) inParenImport = false;
+      // Strip any paren chars, then accumulate the symbol names on this line.
+      imports.push(...exportedNames(trimmed.replace(/[()]/g, "")));
+      continue;
+    }
+
+    // from module import foo, bar  — or  from module import (foo, bar [...])
     const fromImp = trimmed.match(/^from\s+\S+\s+import\s+(.+)/);
     if (fromImp) {
-      imports.push(...exportedNames(fromImp[1]));
+      let rest = fromImp[1];
+      if (rest.includes("(")) {
+        // Open a multi-line block unless the closing paren is on the same line.
+        if (!rest.includes(")")) inParenImport = true;
+        rest = rest.replace(/[()]/g, "");
+      }
+      imports.push(...exportedNames(rest));
       continue;
     }
 

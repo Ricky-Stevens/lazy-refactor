@@ -85,18 +85,20 @@ function extractGoGroupedExports(lines, existingExports) {
 /**
  * TypeScript: collect re-exported names from `export { foo, bar }` / `export { foo as bar }` blocks.
  * The exported name is the alias when present ("foo as bar" → "bar").
+ * Scans full content with a global regex so blocks split across multiple lines are captured.
  */
-function extractTypeScriptReExports(lines) {
+function extractTypeScriptReExports(content) {
   const result = [];
+  const re = /export\s+\{([^}]+)\}/g;
+  let m;
 
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].trim().match(/^export\s+\{([^}]+)\}/);
-    if (!m) continue;
+  while ((m = re.exec(content))) {
+    const line = content.slice(0, m.index).split("\n").length - 1;
 
     for (const segment of m[1].split(",")) {
       const parts = segment.trim().split(/\s+as\s+/);
       const exportedName = parts[parts.length - 1].trim();
-      if (exportedName) result.push({ name: exportedName, line: i });
+      if (exportedName) result.push({ name: exportedName, line });
     }
   }
 
@@ -139,7 +141,7 @@ export function extractExports(content, language) {
   }
 
   if (language === "typescript") {
-    exports.push(...extractTypeScriptReExports(lines));
+    exports.push(...extractTypeScriptReExports(content));
   }
 
   return exports;

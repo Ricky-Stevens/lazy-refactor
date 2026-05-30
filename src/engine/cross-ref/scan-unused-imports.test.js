@@ -56,6 +56,67 @@ describe("scanUnusedImports", () => {
 });
 
 // ---------------------------------------------------------------------------
+// scanUnusedImports — TypeScript precision (U1 inline type, U2 comments)
+// ---------------------------------------------------------------------------
+
+describe("scanUnusedImports — TypeScript precision", () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "unused-ts-precision-"));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("does not flag an inline `type` import used in a type position (U1)", async () => {
+    const sub = join(dir, "u1");
+    await mkdir(sub, { recursive: true });
+    await writeFile(
+      join(sub, "a.ts"),
+      ["import { type Foo, useState } from './x';", "const v: Foo = useState();"].join("\n"),
+    );
+    const symbols = (await scanUnusedImports(sub, {})).map((f) => f.symbol);
+    expect(symbols).not.toContain("Foo");
+    expect(symbols).not.toContain("type Foo");
+    expect(symbols).not.toContain("useState");
+  });
+
+  it("still flags a genuinely unused inline `type` import (U1 doesn't over-suppress)", async () => {
+    const sub = join(dir, "u1-unused");
+    await mkdir(sub, { recursive: true });
+    await writeFile(
+      join(sub, "a.ts"),
+      ["import { type Used, type Dead } from './x';", "const v: Used = 1;"].join("\n"),
+    );
+    const symbols = (await scanUnusedImports(sub, {})).map((f) => f.symbol);
+    expect(symbols).toContain("Dead");
+    expect(symbols).not.toContain("Used");
+  });
+
+  it("does not parse imports written inside comments (U2)", async () => {
+    const sub = join(dir, "u2");
+    await mkdir(sub, { recursive: true });
+    await writeFile(
+      join(sub, "barrel.ts"),
+      [
+        "/**",
+        " * @example",
+        " * import { Button, Badge } from './ui'",
+        " */",
+        "export * from './button';",
+        "// import { Legacy } from './old'",
+      ].join("\n"),
+    );
+    const symbols = (await scanUnusedImports(sub, {})).map((f) => f.symbol);
+    expect(symbols).not.toContain("Button");
+    expect(symbols).not.toContain("Badge");
+    expect(symbols).not.toContain("Legacy");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // scanUnusedImports — C# (skipped)
 // ---------------------------------------------------------------------------
 
@@ -87,6 +148,59 @@ describe("scanUnusedImports — C# (skipped)", () => {
     const csFindings = findings.filter((f) => f.file.endsWith(".cs"));
     // C# is intentionally skipped — no findings expected
     expect(csFindings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanUnusedImports — Python backslash line-continuation
+// ---------------------------------------------------------------------------
+
+describe("scanUnusedImports — Python backslash continuation", () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "unused-py-backslash-"));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("parses backslash-continued names and never emits a '\\' symbol", async () => {
+    const sub = join(dir, "cont");
+    await mkdir(sub, { recursive: true });
+    await writeFile(join(sub, "a.py"), ["from mod import foo, \\", "    bar", "foo()"].join("\n"));
+
+    const findings = await scanUnusedImports(sub, {});
+    const symbols = findings.filter((f) => f.file.endsWith("a.py")).map((f) => f.symbol);
+    // The continued name `bar` is parsed (and unused -> flagged); `foo` is used.
+    expect(symbols).toContain("bar");
+    expect(symbols).not.toContain("foo");
+    // No garbage backslash token leaks through.
+    expect(symbols).not.toContain("\\");
+  });
+
+  it("does not flag a continued name used after the continuation line", async () => {
+    const sub = join(dir, "used-later");
+    await mkdir(sub, { recursive: true });
+    await writeFile(
+      join(sub, "b.py"),
+      ["from mod import foo, \\", "    bar", "foo()", "bar()"].join("\n"),
+    );
+
+    const findings = await scanUnusedImports(sub, {});
+    const symbols = findings.filter((f) => f.file.endsWith("b.py")).map((f) => f.symbol);
+    expect(symbols).not.toContain("bar");
+    expect(symbols).not.toContain("foo");
+  });
+
+  it("does not crash on parenthesized imports (regex-safe symbol interpolation)", async () => {
+    const sub = join(dir, "paren");
+    await mkdir(sub, { recursive: true });
+    await writeFile(join(sub, "c.py"), ["from mod import (foo, bar)", "foo()"].join("\n"));
+
+    // The contract here is "does not throw"; paren-stripping is a separate concern.
+    await expect(scanUnusedImports(sub, {})).resolves.toBeArray();
   });
 });
 

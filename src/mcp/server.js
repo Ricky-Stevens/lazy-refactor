@@ -1,12 +1,12 @@
 /**
  * MCP server entry point for lazy-refactor.
  *
- * Exposes 23 tools:
+ * Exposes 25 tools:
  *   Scan:   run_scan, resume_scan, scan_duplicates, scan_dead_code, scan_metrics, scan_patterns,
  *           detect_language, scan_inconsistent_patterns, scan_over_engineering
- *   Runs:   list_runs, set_active_run, set_run_status, delete_run
- *   State:  get_findings, get_findings_by_ids, count_findings, get_summary, update_finding,
- *           update_findings, prune_findings, clear_findings
+ *   Runs:   list_runs, get_active_run, set_active_run, set_run_status, delete_run
+ *   State:  get_findings, get_findings_by_ids, count_findings, group_findings, get_summary,
+ *           update_finding, update_findings, prune_findings, clear_findings
  *   Config: get_config, update_config
  */
 
@@ -25,7 +25,7 @@ const projectPath = process.cwd();
 
 const server = new McpServer({
   name: "lazy-refactor",
-  version: "0.6.0",
+  version: "0.7.0",
 });
 
 registerRunScan(server, projectPath);
@@ -40,7 +40,10 @@ registerConfigTools(server, projectPath);
 // prompt exit. closeAllConnections is idempotent, so overlapping paths are safe.
 process.on("exit", () => closeAllConnections());
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => process.exit(0));
+  process.on(signal, () => {
+    process.stderr.write(`lazy-refactor: received ${signal}, shutting down\n`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
 }
 
 async function main() {

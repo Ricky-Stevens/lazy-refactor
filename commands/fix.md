@@ -25,6 +25,17 @@ Apply fixes to code quality issues identified in scans, with test verification a
 
 > **Note:** Non-fixable findings require manual intervention. Use `/report` to review them.
 
+## Execution Discipline — one gate, then finish the whole run
+
+The user ran `/fix` to get findings fixed. Get them fixed. Bias hard toward completion.
+
+- **There is exactly ONE decision point: the confirmation in step 2.** Ask once, up front, then execute the entire selected set to completion. After the user confirms (or `--yes` is passed), do **not** ask again, re-confirm scope, "re-level", pause to reconsider, or stop to report partial progress and wait for a nudge. Drive every dispatched batch to the end and report once.
+- **Don't re-litigate scope the user already chose.** If they said `all`, fix all of it. Don't shrink the job, propose a smaller subset, or stop midway to suggest deferring — that's the laziness this command exists to avoid.
+- **False positives and risks are recorded, not escalated.** When fixers report findings that were wrong (build-critical deps, framework-wired exports, mis-detections), they're marked `false-positive` and the run continues. Collect these and surface them in the **final** summary — never halt the run to discuss them.
+- **Keep dispatching until the work-list is empty.** Page through the findings, dispatch fixer batches in parallel waves, and only stop when every selected finding is fixed, reverted, or marked. A large count is the expected workload, not a reason to bail.
+
+The only mid-run stop allowed is a genuine environment failure (e.g. the test command can't run at all). Discovering that some findings are noise is not a failure — it's a normal outcome to report at the end.
+
 ## Behavior
 
 1. **Parse the target into a filter**:
@@ -51,15 +62,26 @@ Apply fixes to code quality issues identified in scans, with test verification a
    - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)
    - Print the total count, e.g. `3 finding(s) will be fixed.`
    - Also fetch non-fixable open findings and, if any exist, show a summary line: `N non-fixable finding(s) skipped (use /lazy-refactor report to review). These require manual intervention.` List their IDs, severities, and one-line descriptions so the user knows what's being left behind.
-   - Ask the user to confirm: `Proceed? [y/N]`
+   - Ask the user to confirm: `Proceed? [y/N]`. Keep it to this single line — present the count and the table, not a persuasive case for doing less. Do not editorialise about the work being large, risky, or better deferred; if you have a genuine must-flag risk, state it in one sentence and still ask the plain `Proceed?`.
    - If the `--yes` flag was passed, skip the prompt and proceed automatically
    - If the user does not confirm, abort with no changes made
+   - **This is the only gate.** Once confirmed, go straight through steps 3–6 to completion without returning here.
 
 3. **Dispatch the fixer agent in batches, not one-per-finding:**
-   - **Group the selected findings by file** (first location's file). Treat each duplicate cluster as a single unit, as before.
-   - Dispatch **one fixer agent per file-group**, passing it the list of finding IDs in that group. Independent groups (different files) can be dispatched in parallel.
-   - This is the key throughput change: a 1,000-finding run becomes ~N file-group dispatches instead of 1,000 serial agent + tool-call round-trips.
-   - Each fixer reads the finding details, understands context, makes the minimal targeted change per finding, runs tests, and reports per-finding outcomes.
+   - **Group server-side with `group_findings`** — call it with `by: "file"` and the same
+     filter from step 1. It returns `{ groups: [{ key: file, count, ids }], totalGroups,
+     totalFindings }` — the file→finding-ID map you need, **without** any finding bodies.
+     Never fetch all findings and group them yourself, and **never read raw tool-result files
+     off disk** to build the grouping; `group_findings` is the supported path and its response
+     stays small even for thousands of findings. (Duplicate clusters group under their primary
+     file, so they remain a single unit.)
+   - Dispatch **one fixer agent per group**, passing it that group's `ids`. The fixer calls
+     `get_findings_by_ids` to load just its own findings' details. Independent groups (different
+     files) can be dispatched in parallel.
+   - This is the key throughput change: a 1,000-finding run becomes ~N file-group dispatches
+     instead of 1,000 serial agent + tool-call round-trips.
+   - Each fixer reads its findings' details, understands context, makes the minimal targeted
+     change per finding, runs tests, and reports per-finding outcomes.
 
 4. **Dry-run mode** (when `--dry-run` is provided):
    - Analyze what would be fixed

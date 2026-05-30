@@ -110,4 +110,29 @@ describe("updateFindings", () => {
     expect(res.updated).toBe(0);
     expect(res.notFound).toEqual(["f-missing"]);
   });
+
+  it("dedups duplicate ids in updates mode, counting distinct findings (last-write-wins)", async () => {
+    await seed();
+    const res = await updateFindings(projectPath, {
+      updates: [
+        { id: "f-a", status: "fixed" },
+        { id: "f-a", status: "ignored" },
+      ],
+    });
+    expect(res.updated).toBe(1);
+    // Last conflicting patch wins.
+    expect((await oneFinding(projectPath, "f-a")).status).toBe("ignored");
+  });
+
+  it("dedups repeated unknown ids in updates-mode notFound", async () => {
+    await seed();
+    const res = await updateFindings(projectPath, {
+      updates: [
+        { id: "f-missing", status: "fixed" },
+        { id: "f-missing", status: "ignored" },
+      ],
+    });
+    expect(res.updated).toBe(0);
+    expect(res.notFound).toEqual(["f-missing"]);
+  });
 });

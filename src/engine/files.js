@@ -13,6 +13,11 @@ export const LANGUAGE_EXTENSIONS = {
 
 export const ALL_SOURCE_EXTENSIONS = new Set(Object.values(LANGUAGE_EXTENSIONS).flat());
 
+// Files larger than this are skipped — minified bundles / generated blobs blow up
+// the duplicate detector (char-by-char tokenize + per-window BigInt rolling hash)
+// and metrics. Centralized here so both engines inherit the cap via collectFiles.
+export const MAX_FILE_BYTES = 1_000_000;
+
 // Common non-source directories that should never be scanned.
 export const SKIP_DIRS = new Set([
   "node_modules",
@@ -42,12 +47,30 @@ export function globToRegex(pattern) {
   const cached = _globCache.get(pattern);
   if (cached) return cached;
 
-  const expanded = pattern.replace(/\{([^}]+)\}/g, (_, inner) => {
-    const alts = inner.split(",").map((s) => s.trim());
-    return `(${alts.map((a) => a.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
-  });
+  // Build the regex segment-by-segment: literal runs go through buildRegexString
+  // (which escapes `(`/`)`/`|`), while brace alternations are turned into regex
+  // groups directly. This way a literal `(`/`)`/`|` in a user pattern is NOT
+  // mistaken for grouping syntax, while `{a,b}` brace expansion still works.
+  let body = "";
+  let pos = 0;
+  const braceRe = /\{([^}]+)\}/g;
+  for (let m = braceRe.exec(pattern); m; m = braceRe.exec(pattern)) {
+    body += buildRegexString(pattern.slice(pos, m.index));
+    const alts = m[1].split(",").map((s) => buildRegexString(s.trim()));
+    body += `(${alts.join("|")})`;
+    pos = m.index + m[0].length;
+  }
+  body += buildRegexString(pattern.slice(pos));
 
-  const rx = new RegExp(`^${buildRegexString(expanded)}$`);
+  let rx;
+  try {
+    rx = new RegExp(`^${body}$`);
+  } catch {
+    // Malformed user glob (e.g. unbalanced literal parens). Fall back to an
+    // anchored fully-escaped literal match so one bad pattern can't abort the scan.
+    console.warn(`lazy-refactor: ignoring malformed exclude glob "${pattern}" (matched literally)`);
+    rx = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  }
   _globCache.set(pattern, rx);
   return rx;
 }
@@ -62,10 +85,7 @@ function buildRegexString(expanded) {
   let i = 0;
   while (i < expanded.length) {
     const ch = expanded[i];
-    if (ch === "(" || ch === ")" || ch === "|") {
-      regStr += ch;
-      i++;
-    } else if (expanded.startsWith("**/", i)) {
+    if (expanded.startsWith("**/", i)) {
       regStr += "(.+/)?";
       i += 3;
     } else if (expanded.startsWith("**", i)) {
@@ -78,7 +98,7 @@ function buildRegexString(expanded) {
       regStr += "[^/]";
       i++;
     } else {
-      regStr += ch.replace(/[.+^${}[\]\\]/g, "\\$&");
+      regStr += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
       i++;
     }
   }
@@ -106,11 +126,16 @@ function isExcluded(compiledPatterns, rel, name) {
 async function pushSymlinkIfFile(full, results) {
   try {
     const target = await stat(full);
-    if (target.isFile()) results.push(full);
+    if (target.isFile() && target.size <= MAX_FILE_BYTES) results.push(full);
   } catch {
     // Broken symlink — skip silently.
   }
 }
+
+// Errors that mean a real part of the tree is invisible (vs benign ENOENT/ENOTDIR
+// races or broken symlinks). These are surfaced so a scan can't silently miss a
+// permission-protected subtree and still report "success".
+const PERMISSION_ERROR = /^(EACCES|EPERM|EIO|EMFILE|ENFILE)$/;
 
 /**
  * Recursively collect source files in a directory.
@@ -118,6 +143,8 @@ async function pushSymlinkIfFile(full, results) {
  * @param {object} options
  * @param {string[]} [options.exclude]
  * @param {string[]} [options.languages]
+ * @param {Array<{path: string, code: string}>} [options.skipped] - if provided,
+ *   permission/IO errors that hid a path are recorded here (benign skips stay silent).
  * @returns {Promise<string[]>}
  */
 const _fileListCache = new Map();
@@ -127,7 +154,7 @@ export function clearFileCache() {
 }
 
 export async function collectFiles(dir, options = {}) {
-  const { exclude = [], languages } = options;
+  const { exclude = [], languages, skipped } = options;
 
   const cacheKey = `${dir}|${JSON.stringify(exclude)}|${languages ? languages.join(",") : ""}`;
   const cached = _fileListCache.get(cacheKey);
@@ -141,11 +168,19 @@ export async function collectFiles(dir, options = {}) {
       : Object.values(LANGUAGE_EXTENSIONS).flat(),
   );
 
+  // Record a permission/IO error against a path; benign races (ENOENT/ENOTDIR) are
+  // intentionally ignored. No-op unless the caller passed a `skipped` accumulator.
+  const recordSkip = (err, path) => {
+    if (skipped && PERMISSION_ERROR.test(err?.code ?? "")) skipped.push({ path, code: err.code });
+  };
+
   async function walk(current) {
     let entries;
     try {
       entries = await readdir(current, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      // A permission/IO error hides this whole subtree — surface it; benign skips silent.
+      recordSkip(err, current);
       return;
     }
     const dirs = [];
@@ -155,7 +190,7 @@ export async function collectFiles(dir, options = {}) {
 
       const full = join(current, entry.name);
 
-      if (entry.isDirectory() && /worktree/i.test(full)) continue;
+      if (entry.isDirectory() && /worktree/i.test(entry.name)) continue;
 
       const rel = full.slice(dir.length + 1);
 
@@ -164,7 +199,13 @@ export async function collectFiles(dir, options = {}) {
       if (entry.isDirectory()) {
         dirs.push(full);
       } else if (entry.isFile() && allowedExts.has(extname(entry.name))) {
-        results.push(full);
+        // Skip oversized files (minified bundles / generated blobs) — see MAX_FILE_BYTES.
+        try {
+          if ((await stat(full)).size <= MAX_FILE_BYTES) results.push(full);
+        } catch (err) {
+          // Unreadable file — record permission/IO errors, skip benign ones silently.
+          recordSkip(err, full);
+        }
       } else if (entry.isSymbolicLink() && allowedExts.has(extname(entry.name))) {
         await pushSymlinkIfFile(full, results);
       }
@@ -197,6 +238,9 @@ export async function readFilesBatched(files, concurrency = BATCH_SIZE) {
         try {
           return [f, await readFile(f, "utf8")];
         } catch {
+          // Best-effort per-file read: a file that vanished or became unreadable between
+          // collectFiles' stat and now is dropped. Directory-level permission losses (the
+          // case that hides a whole subtree) are surfaced by collectFiles' `skipped`.
           return null;
         }
       }),

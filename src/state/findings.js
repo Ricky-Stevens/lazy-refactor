@@ -29,11 +29,13 @@ import {
   deleteByStatus,
   existingIds,
   getDb,
+  groupByColumn,
   markStaleExcept,
   reclaimSpace,
   replaceAll,
   selectAll,
   selectByIds,
+  selectFileCandidates,
   selectScalar,
   summary,
   upsertMany,
@@ -157,11 +159,21 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
           patches.map((p) => p.id),
         );
         const missing = [];
-        const toApply = [];
+        const missingSeen = new Set();
+        // Dedup by id: last conflicting patch wins (preserves prior observable
+        // last-write-wins) while reporting distinct-id counts.
+        const byId = new Map();
         for (const p of patches) {
-          if (!present.has(p.id)) missing.push(p.id);
-          else if (p.status !== undefined || p.notes !== undefined) toApply.push(p);
+          if (!present.has(p.id)) {
+            if (!missingSeen.has(p.id)) {
+              missingSeen.add(p.id);
+              missing.push(p.id);
+            }
+          } else if (p.status !== undefined || p.notes !== undefined) {
+            byId.set(p.id, p);
+          }
         }
+        const toApply = [...byId.values()];
         if (toApply.length) applyPatches(db, runId, toApply);
         return { updated: toApply.length, notFound: missing };
       })
@@ -212,6 +224,19 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
 // Queries
 // ---------------------------------------------------------------------------
 
+// JS comparators mirroring selectScalar's ORDER BY, for the materialised `file` path.
+// Returns null for rowid (already in insertion order). Stable sort keeps rowid as tiebreak.
+const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+function orderComparator(orderBy) {
+  if (orderBy === "severity") {
+    return (a, b) => (SEVERITY_RANK[a.severity] ?? 4) - (SEVERITY_RANK[b.severity] ?? 4);
+  }
+  if (orderBy === "confidence") {
+    return (a, b) => (b.confidence ?? 1) - (a.confidence ?? 1);
+  }
+  return null;
+}
+
 /**
  * Return findings matching the given filter (see matchesFilter for semantics).
  * Supported keys are severity, category, status, language, check, fixable, and file.
@@ -223,8 +248,9 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
  */
 export async function getFindings(projectPath, filter = {}) {
   const { db, runId } = readCtx(projectPath);
-  const rows = selectScalar(db, runId, filter);
-  return filter.file == null ? rows : rows.filter((f) => matchesFilter(f, filter));
+  if (filter.file == null) return selectScalar(db, runId, filter);
+  // File filter: read only candidate blobs (indexed), then narrow exactly in JS.
+  return selectFileCandidates(db, runId, filter).filter((f) => matchesFilter(f, filter));
 }
 
 /**
@@ -236,20 +262,25 @@ export async function getFindings(projectPath, filter = {}) {
  *
  * @param {string} projectPath
  * @param {object} [filter]
- * @param {{ limit?: number, offset?: number }} [page]
+ * @param {{ limit?: number, offset?: number, orderBy?: string }} [page]
  */
-export async function getFindingsPage(projectPath, filter = {}, { limit, offset } = {}) {
+export async function getFindingsPage(projectPath, filter = {}, { limit, offset, orderBy } = {}) {
   const { db, runId } = readCtx(projectPath);
   const start = offset ?? 0;
 
   if (filter.file != null) {
-    const all = selectScalar(db, runId, filter).filter((f) => matchesFilter(f, filter));
+    // Read only candidate blobs (indexed superset), then narrow exactly in JS and sort
+    // by the same key the SQL path uses. Array.sort is stable, so candidate rowid order
+    // is preserved as the tiebreaker.
+    const all = selectFileCandidates(db, runId, filter).filter((f) => matchesFilter(f, filter));
+    const cmp = orderComparator(orderBy);
+    if (cmp) all.sort(cmp);
     const findings = limit == null ? all.slice(start) : all.slice(start, start + limit);
     return { findings, total: all.length };
   }
 
   return {
-    findings: selectScalar(db, runId, filter, { limit, offset: start }),
+    findings: selectScalar(db, runId, filter, { limit, offset: start, orderBy }),
     total: countScalar(db, runId, filter),
   };
 }
@@ -276,7 +307,46 @@ export async function getSummary(projectPath) {
 export async function countFindings(projectPath, filter = {}) {
   const { db, runId } = readCtx(projectPath);
   if (filter.file == null) return countScalar(db, runId, filter);
-  return selectScalar(db, runId, filter).filter((f) => matchesFilter(f, filter)).length;
+  return selectFileCandidates(db, runId, filter).filter((f) => matchesFilter(f, filter)).length;
+}
+
+/**
+ * Group findings matching a filter by `by` (default 'file'), returning
+ * `{ by, groups: [{ key, count, ids }], totalGroups, totalFindings }` sorted by count
+ * desc. The point is to plan work (e.g. one fixer per file) WITHOUT pulling every
+ * finding into the caller's context: only keys + ids are returned, never the bulky
+ * `data` blobs. Indexed columns group in SQL (group_concat). `file` is multi-location
+ * (it lives in each finding's `locations[]`), so it materialises the run and groups by
+ * each finding's PRIMARY location in JS — matching how the fixer dispatches per file.
+ *
+ * @param {string} projectPath
+ * @param {object} [filter]
+ * @param {'file'|'category'|'check'|'severity'|'language'|'status'} [by]
+ */
+export async function groupFindings(projectPath, filter = {}, by = "file") {
+  const { db, runId } = readCtx(projectPath);
+
+  if (by !== "file") {
+    const groups = groupByColumn(db, runId, filter, by);
+    const totalFindings = groups.reduce((n, g) => n + g.count, 0);
+    return { by, groups, totalGroups: groups.length, totalFindings };
+  }
+
+  const rows = selectScalar(db, runId, filter);
+  const matched = filter.file == null ? rows : rows.filter((f) => matchesFilter(f, filter));
+  const map = new Map();
+  for (const f of matched) {
+    const key = f.locations?.[0]?.file ?? null;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, count: 0, ids: [] };
+      map.set(key, g);
+    }
+    g.count += 1;
+    g.ids.push(f.id);
+  }
+  const groups = [...map.values()].sort((a, b) => b.count - a.count);
+  return { by, groups, totalGroups: groups.length, totalFindings: matched.length };
 }
 
 /**

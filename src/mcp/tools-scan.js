@@ -15,7 +15,7 @@ import {
 } from "../engine/cross-ref.js";
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
-import { clearFileCache } from "../engine/files.js";
+import { clearFileCache, collectFiles, LANGUAGE_EXTENSIONS } from "../engine/files.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
@@ -48,13 +48,32 @@ import {
  */
 async function resolveLanguages(config, langOverride, resolvedPath) {
   if (langOverride && langOverride.length > 0) {
-    return langOverride;
+    return validateLanguages(langOverride);
   }
   if (config.languages !== "auto") {
-    return Array.isArray(config.languages) ? config.languages : [config.languages];
+    return validateLanguages(
+      Array.isArray(config.languages) ? config.languages : [config.languages],
+    );
   }
   const detected = await detectLanguages(resolvedPath);
   return detected.languages;
+}
+
+/**
+ * Validate explicitly-supplied languages against the known set so a typo or
+ * unsupported language fails loudly instead of silently scanning nothing.
+ * @param {string[]} languages
+ * @returns {string[]}
+ */
+function validateLanguages(languages) {
+  const known = Object.keys(LANGUAGE_EXTENSIONS).filter((k) => k !== "common");
+  const bad = languages.filter((l) => !known.includes(l));
+  if (bad.length > 0) {
+    throw new Error(
+      `Unknown language(s) in 'languages': ${bad.join(", ")}. Known: ${known.join(", ")}`,
+    );
+  }
+  return languages;
 }
 
 /**
@@ -64,10 +83,11 @@ async function resolveLanguages(config, langOverride, resolvedPath) {
  * @returns {object[]}
  */
 function filterDisabledChecks(findings, config) {
-  if (!config.disabledChecks || config.disabledChecks.length === 0) {
+  const disabled = Array.isArray(config.disabledChecks) ? config.disabledChecks : [];
+  if (disabled.length === 0) {
     return findings;
   }
-  return findings.filter((f) => !config.disabledChecks.includes(f.check));
+  return findings.filter((f) => !disabled.includes(f.check));
 }
 
 /**
@@ -82,6 +102,12 @@ function filterDisabledChecks(findings, config) {
 async function collectFindings(resolvedPath, focus, config, languages, exclude) {
   const rules = buildRules(languages);
   const tasks = [];
+
+  // One representative walk up front: it pre-populates collectFiles' cache (which the
+  // engine scans below reuse) AND captures any directory hidden by a permission/IO
+  // error, so a scan can't silently miss a protected subtree and still report success.
+  const skipped = [];
+  await collectFiles(resolvedPath, { exclude, languages, skipped });
 
   if (focus.includes("duplicates")) {
     tasks.push(
@@ -168,6 +194,12 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
     } else {
       warnings.push(result.reason?.message ?? String(result.reason));
     }
+  }
+  if (skipped.length > 0) {
+    const paths = skipped.map((s) => `${s.path} (${s.code})`).join(", ");
+    warnings.push(
+      `${skipped.length} path(s) were unreadable and skipped — results may be incomplete: ${paths}`,
+    );
   }
   if (warnings.length > 0) {
     allFindings.warnings = warnings;
@@ -265,12 +297,17 @@ export function registerRunScan(server, projectPath) {
     },
     async ({ id, path, options = {} }) => {
       try {
-        setActiveRun(projectPath, id);
-        const scanPath = path ?? getRun(projectPath, id)?.path;
+        const run = getRun(projectPath, id);
+        if (!run) {
+          return fail(new Error(`Run '${id}' not found`));
+        }
+        const scanPath = path ?? run.path;
         if (!scanPath) {
           return fail(new Error(`Run '${id}' has no stored scan path; provide 'path'.`));
         }
-        return ok({ runId: id, ...(await performScan(projectPath, scanPath, options)) });
+        const resolvedPath = await validateScanPath(scanPath);
+        setActiveRun(projectPath, id);
+        return ok({ runId: id, ...(await performScan(projectPath, resolvedPath, options)) });
       } catch (err) {
         return fail(err);
       }

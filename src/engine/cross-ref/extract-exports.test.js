@@ -88,6 +88,23 @@ describe("extractExports — TypeScript export { X } re-exports", () => {
     }
   });
 
+  it("detects re-exports split across multiple lines", () => {
+    const content = "export {\n  computeWidgetValue,\n  renderWidget,\n} from './x';";
+    const result = extractExports(content, "typescript");
+    const names = result.map((e) => e.name);
+    expect(names).toContain("computeWidgetValue");
+    expect(names).toContain("renderWidget");
+  });
+
+  it("records the line where a multi-line re-export block begins", () => {
+    const content = "// preamble\nexport {\n  alpha,\n} from './x';";
+    const result = extractExports(content, "typescript");
+    const alpha = result.find((e) => e.name === "alpha");
+    expect(alpha).toBeDefined();
+    // The `export {` token is on line 1 (0-based)
+    expect(alpha.line).toBe(1);
+  });
+
   it("does not produce duplicate entries when a symbol is both declared and re-exported", () => {
     const content = ["export function helper() {}", "export { helper };"].join("\n");
     const result = extractExports(content, "typescript");

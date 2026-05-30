@@ -46,6 +46,38 @@ describe("list_runs tool", () => {
   });
 });
 
+describe("get_active_run tool", () => {
+  it("returns null run on a never-scanned project (no phantom run created)", async () => {
+    const { run } = payload(await tools.get_active_run({}));
+    expect(run).toBeNull();
+    // Confirm the read did not mint a run.
+    expect(getActiveRunId(dir)).toBeNull();
+  });
+
+  it("returns the active run identity and its findings summary", async () => {
+    createRun(dir, { label: "A" });
+    await addFindings(
+      dir,
+      [
+        {
+          check: "c",
+          severity: "high",
+          category: "m",
+          description: "d",
+          locations: [{ file: "x.js", startLine: 1 }],
+        },
+      ],
+      "s1",
+      "/repo",
+    );
+    const { run, summary } = payload(await tools.get_active_run({}));
+    expect(run.id).toBe(getActiveRunId(dir));
+    expect(run.path).toBe("/repo");
+    expect(run.scanId).toBe("s1");
+    expect(summary.totalFindings).toBe(1);
+  });
+});
+
 describe("set_run_status tool", () => {
   it("defaults to the active run and updates status", async () => {
     createRun(dir, {});

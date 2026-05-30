@@ -10,19 +10,19 @@ Display findings from the last scan, with optional filtering by severity and cat
 ## Usage
 
 ```
-/lazy-refactor report [--severity=high] [--category=duplicates] [--status=open] [--language=go]
+/lazy-refactor report [--severity=high] [--category=duplication] [--status=open] [--language=go]
 ```
 
 ## Arguments
 
 - `--severity` (optional): Filter findings by severity level. Options: `critical`, `high`, `medium`, `low`. If omitted, all severities are shown.
-- `--category` (optional): Filter findings by category. Options: `duplicates`, `dead-code`, `metrics`, `patterns`, `modularity`, `comments`, `over-engineering`. If omitted, all categories are shown.
+- `--category` (optional): Filter findings by category. Values match the stored `category` field exactly (no aliasing). Options: `duplication`, `dead-code`, `metrics`, `modularity`, `complexity`, `consistency`, `security`, `comment-quality`, `error-handling`, `type-safety`, `deprecated-patterns`, `correctness`, `maintainability`, `resource-leaks`, `resource-management`, `react-hooks`, `debugging-leftovers`, `hardcoded-values`, `hardcoded-magic-values`, `concurrency`. If omitted, all categories are shown.
 - `--status` (optional): Filter findings by status. Options: `open`, `fixed`, `ignored`, `in-progress`, `false-positive`, `stale`. Defaults to `open`.
-- `--language` (optional): Filter findings by language. Options: `ts`, `js`, `go`, `python`, `csharp`, `java`. Matches the `language` field on pattern findings. If omitted, all languages are shown.
+- `--language` (optional): Filter findings by language. Values match the stored `language` field exactly (no aliasing). Options: `typescript`, `go`, `python`, `csharp`, `java`, `common`. Matches the `language` field on findings. If omitted, all languages are shown.
 
 ## Behavior
 
-1. **Fetch findings**: Call `get_findings` with the specified filters (severity, category, status, language; `file` and `check` are also supported). This reports the **active run** — use `list_runs` to see all runs and `set_active_run <id>` to switch to a different one without re-scanning (or `resume_scan <id>` to re-scan into it). `delete_run <id>` removes a run you no longer need. For very large result sets, pass `compact: true` to get a lightweight projection (drops code snippets and bulky fields) and page with `limit`/`offset`.
+1. **Fetch findings**: Call `get_findings` with the specified filters (severity, category, status, language, `fixable`, `minConfidence`; `file` and `check` are also supported). Pass `orderBy: "severity"` so the page comes back already most-severe-first — you do NOT need to pull every finding and sort client-side for the by-severity report. This reports the **active run** (call `get_active_run` for its id/path header); use `list_runs` to see all runs and `set_active_run <id>` to switch to a different one without re-scanning (or `resume_scan <id>` to re-scan into it). `delete_run <id>` removes a run you no longer need. For very large result sets, pass `compact: true` to get a lightweight projection (drops code snippets and bulky fields) and page with `limit`/`offset`.
 
 2. **Format results**: Organize findings by:
    - Primary grouping: Severity level (Critical, High, Medium, Low)
@@ -54,7 +54,7 @@ Display findings from the last scan, with optional filtering by severity and cat
 /lazy-refactor report
 /lazy-refactor report --severity=high
 /lazy-refactor report --category=dead-code --status=open
-/lazy-refactor report --severity=critical,high --category=duplicates
+/lazy-refactor report --severity=critical,high --category=duplication
 /lazy-refactor report --language=go
 /lazy-refactor report --language=csharp --severity=high
 ```

@@ -8,7 +8,9 @@ import {
   countFindings,
   getFindings,
   getFindingsByIds,
+  getFindingsPage,
   getSummary,
+  groupFindings,
   loadFindings,
   updateFindings,
 } from "./findings.js";
@@ -175,6 +177,225 @@ describe("fixable filter", () => {
     ]);
     // Fixable findings are untouched.
     expect(await countFindings(projectPath, { fixable: true, status: "open" })).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// file filter — indexed candidate path preserves multi-location semantics
+// ---------------------------------------------------------------------------
+
+describe("file filter (multi-location)", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        // Single-location finding in a.js (matched via the primary-file index).
+        { ...makeFinding(), id: "f-single", locations: [{ file: "a.js", startLine: 1 }] },
+        // Duplicate cluster whose PRIMARY file is a.js but ALSO spans b.js — the case the
+        // primary-file column alone would drop. Must still match a `file: "b.js"` filter.
+        {
+          ...makeFinding(),
+          id: "f-cluster",
+          check: "duplicate-cluster",
+          locations: [
+            { file: "a.js", startLine: 5 },
+            { file: "b.js", startLine: 9 },
+          ],
+        },
+        { ...makeFinding(), id: "f-other", locations: [{ file: "c.js", startLine: 1 }] },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("matches a cluster on a NON-primary location file (not dropped)", async () => {
+    const ids = (await getFindings(projectPath, { file: "b.js" })).map((f) => f.id).sort();
+    expect(ids).toEqual(["f-cluster"]);
+  });
+
+  it("matches by primary file, returning both the single finding and the cluster", async () => {
+    const ids = (await getFindings(projectPath, { file: "a.js" })).map((f) => f.id).sort();
+    expect(ids).toEqual(["f-cluster", "f-single"]);
+  });
+
+  it("countFindings agrees with the materialised file-filter result", async () => {
+    expect(await countFindings(projectPath, { file: "b.js" })).toBe(1);
+    expect(await countFindings(projectPath, { file: "a.js" })).toBe(2);
+    expect(await countFindings(projectPath, { file: "nope.js" })).toBe(0);
+  });
+
+  it("combines file with a scalar (status) filter", async () => {
+    await updateFindings(projectPath, { ids: ["f-cluster"], status: "fixed" });
+    // status:"open" excludes the now-fixed cluster, leaving no open finding in b.js.
+    expect((await getFindings(projectPath, { file: "b.js", status: "open" })).length).toBe(0);
+    // status:"fixed" finds it again — the scalar filter is applied alongside the file match.
+    expect(
+      (await getFindings(projectPath, { file: "b.js", status: "fixed" })).map((f) => f.id),
+    ).toEqual(["f-cluster"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orderBy (severity CASE rank / confidence / rowid default)
+// ---------------------------------------------------------------------------
+
+describe("orderBy", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        {
+          ...makeFinding(),
+          id: "f-low",
+          severity: "low",
+          confidence: 0.9,
+          locations: [{ file: "a.js" }],
+        },
+        {
+          ...makeFinding(),
+          id: "f-crit",
+          severity: "critical",
+          confidence: 0.3,
+          locations: [{ file: "a.js" }],
+        },
+        {
+          ...makeFinding(),
+          id: "f-med",
+          severity: "medium",
+          confidence: 0.6,
+          locations: [{ file: "a.js" }],
+        },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("orderBy severity returns most-severe first (SQL path)", async () => {
+    const { findings } = await getFindingsPage(projectPath, {}, { orderBy: "severity" });
+    expect(findings.map((f) => f.id)).toEqual(["f-crit", "f-med", "f-low"]);
+  });
+
+  it("orderBy confidence returns highest-confidence first (SQL path)", async () => {
+    const { findings } = await getFindingsPage(projectPath, {}, { orderBy: "confidence" });
+    expect(findings.map((f) => f.id)).toEqual(["f-low", "f-med", "f-crit"]);
+  });
+
+  it("orderBy severity applies on the JS file-filter path too", async () => {
+    const { findings } = await getFindingsPage(
+      projectPath,
+      { file: "a.js" },
+      { orderBy: "severity" },
+    );
+    expect(findings.map((f) => f.id)).toEqual(["f-crit", "f-med", "f-low"]);
+  });
+
+  it("defaults to insertion order when orderBy is omitted", async () => {
+    const { findings } = await getFindingsPage(projectPath, {}, {});
+    expect(findings.map((f) => f.id)).toEqual(["f-low", "f-crit", "f-med"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// minConfidence filter (blob-extracted, SQL-native + JS file path)
+// ---------------------------------------------------------------------------
+
+describe("minConfidence filter", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        { ...makeFinding(), id: "f-hi", confidence: 0.95, locations: [{ file: "a.js" }] },
+        { ...makeFinding(), id: "f-mid", confidence: 0.6, locations: [{ file: "a.js" }] },
+        { ...makeFinding(), id: "f-lo", confidence: 0.2, locations: [{ file: "a.js" }] },
+        // No confidence key — must default to 1 (matches prioritizer.js / SQL IFNULL).
+        { ...makeFinding(), id: "f-none", confidence: undefined, locations: [{ file: "a.js" }] },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("selects findings at or above the threshold, treating missing confidence as 1", async () => {
+    const ids = (await getFindings(projectPath, { minConfidence: 0.7 })).map((f) => f.id).sort();
+    expect(ids).toEqual(["f-hi", "f-none"]);
+  });
+
+  it("countFindings honors minConfidence without materialising", async () => {
+    expect(await countFindings(projectPath, { minConfidence: 0.5 })).toBe(3);
+    expect(await countFindings(projectPath, { minConfidence: 0.99 })).toBe(1);
+  });
+
+  it("enforces minConfidence on the JS file-filter path too (matchesFilter)", async () => {
+    const ids = (await getFindings(projectPath, { minConfidence: 0.7, file: "a.js" }))
+      .map((f) => f.id)
+      .sort();
+    expect(ids).toEqual(["f-hi", "f-none"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupFindings
+// ---------------------------------------------------------------------------
+
+describe("groupFindings", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        {
+          ...makeFinding(),
+          id: "f-a1",
+          category: "dead-code",
+          locations: [{ file: "src/a.js", startLine: 1, endLine: 1 }],
+        },
+        {
+          ...makeFinding(),
+          id: "f-a2",
+          category: "metrics",
+          locations: [{ file: "src/a.js", startLine: 9, endLine: 9 }],
+        },
+        {
+          ...makeFinding(),
+          id: "f-b1",
+          category: "dead-code",
+          locations: [{ file: "src/b.js", startLine: 3, endLine: 3 }],
+        },
+        // No locations — groups under the null key, not dropped.
+        { ...makeFinding(), id: "f-none", category: "metrics", locations: [] },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("groups by file (default), returning ids per file without bodies", async () => {
+    const { by, groups, totalGroups, totalFindings } = await groupFindings(projectPath);
+    expect(by).toBe("file");
+    expect(totalFindings).toBe(4);
+    expect(totalGroups).toBe(3);
+    // Sorted by count desc — src/a.js (2) leads.
+    expect(groups[0]).toEqual({ key: "src/a.js", count: 2, ids: ["f-a1", "f-a2"] });
+    const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+    expect(byKey["src/b.js"].ids).toEqual(["f-b1"]);
+    expect(byKey.null.ids).toEqual(["f-none"]);
+    // No finding bodies leak into the grouping payload.
+    expect(groups[0]).not.toHaveProperty("description");
+  });
+
+  it("honors the filter when grouping", async () => {
+    const { groups, totalFindings } = await groupFindings(projectPath, { category: "dead-code" });
+    expect(totalFindings).toBe(2);
+    expect(groups.map((g) => g.key).sort()).toEqual(["src/a.js", "src/b.js"]);
+  });
+
+  it("groups by an indexed column via SQL", async () => {
+    const { groups, totalFindings } = await groupFindings(projectPath, {}, "category");
+    expect(totalFindings).toBe(4);
+    const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+    expect(byKey["dead-code"].ids.sort()).toEqual(["f-a1", "f-b1"]);
+    expect(byKey.metrics.ids.sort()).toEqual(["f-a2", "f-none"]);
   });
 });
 

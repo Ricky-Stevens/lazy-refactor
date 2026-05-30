@@ -28,6 +28,9 @@ const DEFAULT_CONFIG = {
 /** Language name -> rule array */
 const LANGUAGE_RULES = {
   typescript: typescriptRules,
+  // .js/.jsx are covered by LANGUAGE_EXTENSIONS.typescript and matched by the
+  // TS/JS rule set, so an explicit 'javascript' override aliases the same rules.
+  javascript: typescriptRules,
   go: goRules,
   python: pythonRules,
   csharp: csharpRules,
@@ -57,18 +60,48 @@ export function deepMerge(base, override) {
 
 export async function validateScanPath(inputPath) {
   const resolved = resolve(inputPath);
-  const info = await stat(resolved);
+  let info;
+  try {
+    info = await stat(resolved);
+  } catch (err) {
+    // Replace raw node errors (which leak the statx syscall name and are not
+    // redacted by redactPaths since the scan path may be outside HOME/cwd)
+    // with clean messages mirroring the not-a-directory branch below.
+    if (err.code === "ENOENT") throw new Error(`Directory not found: ${resolved}`);
+    if (err.code === "EACCES") throw new Error(`Permission denied reading: ${resolved}`);
+    throw err;
+  }
   if (!info.isDirectory()) {
     throw new Error(`Path is not a directory: ${resolved}`);
   }
   return resolved;
 }
 
+// Coerce malformed on-disk overrides back to types the engine contract expects.
+// deepMerge replaces (rather than merges) any non-plain-object override, so a
+// user writing a string/null where an array/object is expected would otherwise
+// crash the scan downstream (compileExcludes/array spreads, thresholds derefs).
+// Normalization belongs here at the config boundary, not in the engine.
+function normalizeConfig(merged) {
+  for (const key of ["exclude", "disabledChecks"]) {
+    if (typeof merged[key] === "string") merged[key] = [merged[key]];
+    else if (!Array.isArray(merged[key])) merged[key] = [...DEFAULT_CONFIG[key]];
+  }
+  if (
+    typeof merged.thresholds !== "object" ||
+    merged.thresholds === null ||
+    Array.isArray(merged.thresholds)
+  ) {
+    merged.thresholds = { ...DEFAULT_CONFIG.thresholds };
+  }
+  return merged;
+}
+
 export async function readConfig(projectPath) {
   try {
     const raw = await readFile(join(projectPath, CONFIG_FILE), "utf8");
     const disk = JSON.parse(raw);
-    return deepMerge(DEFAULT_CONFIG, disk);
+    return normalizeConfig(deepMerge(DEFAULT_CONFIG, disk));
   } catch (err) {
     if (err.code === "ENOENT") return { ...DEFAULT_CONFIG };
     throw err;

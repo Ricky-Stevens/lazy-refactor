@@ -62,6 +62,67 @@ describe("extractImports — TypeScript alias handling (exported name)", () => {
   });
 });
 
+describe("extractImports — inline type modifier (U1)", () => {
+  it("records the bare name for an inline `type` specifier, not 'type Foo'", () => {
+    const result = extractImports("import { type Foo, Bar } from './x';", "typescript");
+    expect(result).toContain("Foo");
+    expect(result).toContain("Bar");
+    expect(result).not.toContain("type Foo");
+  });
+
+  it("handles a multi-line block with inline type modifiers", () => {
+    const result = extractImports(
+      ["import {", "  type Alpha,", "  Beta,", "} from './x';"].join("\n"),
+      "typescript",
+    );
+    expect(result).toContain("Alpha");
+    expect(result).toContain("Beta");
+    expect(result).not.toContain("type Alpha");
+  });
+});
+
+describe("extractImports — re-exports count as uses (D1)", () => {
+  it("treats `export { Foo } from` as a use of Foo", () => {
+    const result = extractImports(
+      "export { CampaignsPage } from './campaigns-page';",
+      "typescript",
+    );
+    expect(result).toContain("CampaignsPage");
+  });
+
+  it("records the exported name for an aliased re-export (`export { Foo as default }`)", () => {
+    const result = extractImports("export { CampaignsPage as default } from './x';", "typescript");
+    expect(result).toContain("CampaignsPage");
+  });
+
+  it("handles multi-line re-exports", () => {
+    const result = extractImports(
+      ["export {", "  One,", "  Two,", "} from './barrel';"].join("\n"),
+      "typescript",
+    );
+    expect(result).toContain("One");
+    expect(result).toContain("Two");
+  });
+
+  it("ignores a local `export { Foo }` with no `from` (not a cross-module use)", () => {
+    const result = extractImports("const Foo = 1;\nexport { Foo };", "typescript");
+    expect(result).not.toContain("Foo");
+  });
+});
+
+describe("extractImports — comments don't pollute the import set (U2)", () => {
+  it("ignores imports written inside a JSDoc @example block", () => {
+    const src = [
+      "/**",
+      " * @example",
+      " * import { Button } from './ui'",
+      " */",
+      "export * from './button';",
+    ].join("\n");
+    expect(extractImports(src, "typescript")).not.toContain("Button");
+  });
+});
+
 describe("extractImports — destructured require with colon rename", () => {
   it("records the local name for { foo: bar } = require(...)", () => {
     const result = extractImports("const { foo: bar } = require('module');", "typescript");
@@ -140,6 +201,31 @@ describe("extractImports — Python exported name (not alias)", () => {
     expect(result).toContain("gamma");
     expect(result).not.toContain("a");
     expect(result).not.toContain("b");
+  });
+});
+
+describe("extractImports — Python parenthesized from-import", () => {
+  it("captures symbols from a multi-line parenthesized import", () => {
+    const content = ["from helpers import (", "  compute_total_amount,", ")"].join("\n");
+    const result = extractImports(content, "python");
+    expect(result).toContain("compute_total_amount");
+    expect(result).not.toContain("(");
+  });
+
+  it("captures multiple symbols across continuation lines", () => {
+    const content = ["from mod import (", "  foo,", "  bar,", ")"].join("\n");
+    const result = extractImports(content, "python");
+    expect(result).toContain("foo");
+    expect(result).toContain("bar");
+    expect(result).not.toContain("(");
+  });
+
+  it("strips parens from a single-line parenthesized import", () => {
+    const result = extractImports("from mod import (foo, bar)", "python");
+    expect(result).toContain("foo");
+    expect(result).toContain("bar");
+    expect(result).not.toContain("(foo");
+    expect(result).not.toContain("bar)");
   });
 });
 

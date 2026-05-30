@@ -30,11 +30,14 @@ export const filterShape = z
     check: z.union([z.string(), z.array(z.string())]).optional(),
     file: z.union([z.string(), z.array(z.string())]).optional(),
     fixable: z.boolean().optional(),
+    minConfidence: z.number().min(0).max(1).optional(),
   })
   .describe(
-    "Filter by severity, category, status, language, check, file, and/or fixable. " +
+    "Filter by severity, category, status, language, check, file, fixable, and/or minConfidence. " +
       "fixable:true selects findings the fixer can auto-apply (missing flag defaults to fixable); " +
-      "fixable:false selects findings that need manual intervention.",
+      "fixable:false selects findings that need manual intervention. " +
+      "minConfidence keeps only findings whose confidence score is >= the given value " +
+      "(0-1; a missing confidence defaults to 1, i.e. fully confident).",
   );
 
 export const findingsSchema = z.object({
@@ -51,6 +54,14 @@ export const findingsSchema = z.object({
     .boolean()
     .optional()
     .describe("Return a lightweight projection (drops snippets/bulky fields) — use at scale"),
+  orderBy: z
+    .enum(["rowid", "severity", "confidence"])
+    .optional()
+    .describe(
+      "Result ordering (default 'rowid' = scan-insertion order). 'severity' returns most-severe " +
+        "first (critical→low); 'confidence' returns highest-confidence first. Lets a single bounded " +
+        "page surface the top-priority findings without pulling and sorting the whole set.",
+    ),
 });
 
 export const byIdsSchema = z.object({
@@ -96,6 +107,14 @@ export const updateFindingsSchema = z.object({
 });
 
 export const countSchema = z.object({ filter: filterShape.optional() });
+
+export const groupSchema = z.object({
+  by: z
+    .enum(["file", "category", "check", "severity", "language", "status"])
+    .optional()
+    .describe("Dimension to group by (default 'file')."),
+  filter: filterShape.optional(),
+});
 
 export const pruneSchema = z.object({
   status: z

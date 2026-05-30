@@ -154,9 +154,11 @@ describe("server.js source checks", () => {
     expect(allMcpSrc).toContain("*.generated.*");
   });
 
-  it("run_scan filters findings by disabledChecks before scoring", () => {
+  it("run_scan filters findings by disabledChecks before scoring (array-guarded)", () => {
     expect(allMcpSrc).toContain("disabledChecks");
-    expect(allMcpSrc).toContain("!config.disabledChecks.includes(f.check)");
+    // Hardened against a non-array config value before membership testing.
+    expect(allMcpSrc).toContain("Array.isArray(config.disabledChecks)");
+    expect(allMcpSrc).toContain("!disabled.includes(f.check)");
   });
 
   it("computeMetrics call includes maxExportsPerFile and maxImportsPerFile", () => {
@@ -189,7 +191,7 @@ describe("new tool registrations", () => {
     expect(scanFocusedSrc).toContain('"scan_over_engineering"');
   });
 
-  it("server.js header comment reflects 23 tools", async () => {
+  it("server.js header comment reflects 25 tools", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
@@ -199,7 +201,7 @@ describe("new tool registrations", () => {
       "utf8",
     );
 
-    expect(serverSrc).toContain("Exposes 23 tools");
+    expect(serverSrc).toContain("Exposes 25 tools");
   });
 
   it("registers clear_findings", async () => {

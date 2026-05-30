@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { compileExcludes, SKIP_DIRS } from "./files.js";
 
+/** Max wall-clock time for a single scan child process; killed children degrade to empty/partial results. */
+const SCAN_TIMEOUT_MS = 30000;
+
 /** @type {boolean|null} */
 let _ripgrepAvailable = null;
 
@@ -11,7 +14,7 @@ let _ripgrepAvailable = null;
 export async function isRipgrepAvailable() {
   if (_ripgrepAvailable !== null) return _ripgrepAvailable;
   try {
-    execFileSync("rg", ["--version"], { stdio: "ignore" });
+    execFileSync("rg", ["--version"], { stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
     _ripgrepAvailable = true;
   } catch {
     _ripgrepAvailable = false;
@@ -70,6 +73,8 @@ function enumerateFilesWithGrep(filePattern, excludes, cwd) {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
       maxBuffer: 50 * 1024 * 1024,
+      timeout: SCAN_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     }).trim();
   } catch {
     return [];
@@ -93,6 +98,8 @@ function grepChunked(pattern, files, cwd) {
         encoding: "utf8",
         stdio: ["pipe", "pipe", "ignore"],
         maxBuffer: 50 * 1024 * 1024,
+        timeout: SCAN_TIMEOUT_MS,
+        killSignal: "SIGKILL",
       });
     } catch (err) {
       // grep exits 1 when no matches found in a chunk — preserve any stdout already produced.
@@ -122,6 +129,8 @@ export function runPatternSearch(pattern, filePattern, excludes, useRipgrep, cwd
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
       maxBuffer: 50 * 1024 * 1024,
+      timeout: SCAN_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     });
   }
   // grep fallback: enumerate files with find then grep in chunks
@@ -147,6 +156,8 @@ function fileMatchesAntiPattern(filePath, antiPattern, useRipgrep) {
     const result = execFileSync(cmd, ["-Pl", antiPattern, filePath], {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
+      timeout: SCAN_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     });
     return result.trim().length > 0;
   } catch {
@@ -225,6 +236,7 @@ export async function scanPatterns(path, rules, options = {}) {
         description: rule.description,
         suggestion: rule.suggestion,
         fixable: rule.fixable,
+        language: rule.language,
       });
     }
   }

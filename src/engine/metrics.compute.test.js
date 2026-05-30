@@ -57,6 +57,26 @@ describe("computeFileMetrics — JS brace-based nesting", () => {
     expect(computeFileMetrics(content, "foo.js").branchPointCount).toBe(8);
   });
 
+  test("does not count TypeScript optional markers as branch points", () => {
+    const content = [
+      "function f(x?: number) {", // optional param, not a branch
+      "  const a: { b?: string } = {};", // optional property
+      "  return 0;",
+      "}",
+    ].join("\n");
+    expect(computeFileMetrics(content, "foo.ts").branchPointCount).toBe(0);
+  });
+
+  test("does not count optional method/property signatures as branch points", () => {
+    const content = ["m?(): void;", "p?: string;", "q?: number;"].join("\n");
+    expect(computeFileMetrics(content, "foo.ts").branchPointCount).toBe(0);
+  });
+
+  test("still counts real ternaries alongside optional markers", () => {
+    const content = ["function f(x?: number) {", "  return x ? 1 : 2;", "}"].join("\n");
+    expect(computeFileMetrics(content, "foo.ts").branchPointCount).toBe(1);
+  });
+
   test("counts do-while as a branch point", () => {
     const content = ["do {", "  x++;", "} while (x < 10);"].join("\n");
     // do(1) + while(1) = 2

@@ -1,15 +1,37 @@
 import { collectFiles, readFilesBatched } from "../files.js";
 import { detectLanguage, isTestFile } from "./classify.js";
+import { stripTsComments, stripTypeModifier } from "./ts-text.js";
+
+/** Escape regex metacharacters so an arbitrary symbol fragment can't break (or inject into) a RegExp. */
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Returns true if `name` does not appear after `afterIndex` in `lines`.
+ * Prefix-offset table: offsets[i] is the char index where line i starts within
+ * lines.join("\n"). Built once per file so isUnused slices the joined content
+ * without re-joining per import (keeps barrel/index files linear, not quadratic).
  * @param {string[]} lines
- * @param {string} name - local alias to check
- * @param {number} afterIndex - line index to start checking from
  */
-function isUnused(lines, name, afterIndex) {
-  const rest = lines.slice(afterIndex + 1).join("\n");
-  return !new RegExp(`\\b${name}\\b`).test(rest);
+function buildLineOffsets(lines) {
+  const offsets = new Array(lines.length);
+  let acc = 0;
+  for (let i = 0; i < lines.length; i++) {
+    offsets[i] = acc;
+    acc += lines[i].length + 1; // +1 for the "\n" join separator
+  }
+  return offsets;
+}
+
+/**
+ * Returns true if `name` does not appear after line `afterIndex` in the file.
+ * @param {string} joined - lines.join("\n"), built once per file
+ * @param {number[]} offsets - prefix-offset table from buildLineOffsets
+ * @param {string} name - local alias to check
+ * @param {number} afterIndex - line index to start checking AFTER
+ */
+function isUnused(joined, offsets, name, afterIndex) {
+  // Start at the char index where the line after `afterIndex` begins.
+  const start = afterIndex + 1 < offsets.length ? offsets[afterIndex + 1] : joined.length;
+  return !new RegExp(`\\b${escapeRe(name)}\\b`).test(joined.slice(start));
 }
 
 /**
@@ -19,30 +41,34 @@ function isUnused(lines, name, afterIndex) {
  * @returns {string}
  */
 function localAlias(sym) {
-  return sym
+  const alias = sym
     .trim()
     .split(/\s+as\s+/)
     .pop()
     .trim();
+  // Strip the inline `type` modifier AFTER taking the alias: for `type Foo`
+  // (no alias) the local name is `Foo`; for `type Foo as Bar` it's `Bar`.
+  return stripTypeModifier(alias);
 }
 
 /**
  * Scan named symbols from a braces string like "foo, bar as b, baz".
  * Returns findings for any locally unused symbols.
  * @param {string} bracesContent
- * @param {string[]} lines
+ * @param {string} joined
+ * @param {number[]} offsets
  * @param {number} importLine
  * @param {string} file
  * @param {Set<string>} checkedSymbols - mutated in place to track seen names
  */
-function findUnusedNamedSymbols(bracesContent, lines, importLine, file, checkedSymbols) {
+function findUnusedNamedSymbols(bracesContent, joined, offsets, importLine, file, checkedSymbols) {
   const findings = [];
   for (const sym of bracesContent.split(",")) {
     const name = localAlias(sym);
     if (!name) continue;
     if (checkedSymbols.has(name)) continue;
     checkedSymbols.add(name);
-    if (isUnused(lines, name, importLine)) {
+    if (isUnused(joined, offsets, name, importLine)) {
       findings.push({ check: "unused-import", file, symbol: name, importLine });
     }
   }
@@ -58,7 +84,13 @@ function findUnusedNamedSymbols(bracesContent, lines, importLine, file, checkedS
  *  Pass 2: handles named import blocks via regex — covers both single-line and multi-line
  *          forms including "import type { ... }". Skips already-checked symbols.
  */
-function scanTypeScript(lines, file) {
+function scanTypeScript(rawLines, file) {
+  // Blank out comments first so imports written inside JSDoc @example blocks or
+  // commented-out code aren't parsed as real imports (a major false-positive source).
+  // stripTsComments preserves line count, so reported importLine indices stay correct.
+  const lines = stripTsComments(rawLines.join("\n")).split("\n");
+  const joined = lines.join("\n");
+  const offsets = buildLineOffsets(lines);
   const findings = [];
   const checkedSymbols = new Set();
 
@@ -69,7 +101,7 @@ function scanTypeScript(lines, file) {
     // Mixed: import React, { useState } from 'react'
     const mixed = line.match(/^import\s+\w+\s*,\s*\{([^}]+)\}\s+from/);
     if (mixed) {
-      findings.push(...findUnusedNamedSymbols(mixed[1], lines, i, file, checkedSymbols));
+      findings.push(...findUnusedNamedSymbols(mixed[1], joined, offsets, i, file, checkedSymbols));
       continue;
     }
 
@@ -78,25 +110,30 @@ function scanTypeScript(lines, file) {
     if (defaultImp) {
       const name = defaultImp[1];
       checkedSymbols.add(name);
-      if (isUnused(lines, name, i)) {
+      if (isUnused(joined, offsets, name, i)) {
         findings.push({ check: "unused-import", file, symbol: name, importLine: i });
       }
     }
   }
 
   // Pass 2: named import blocks (single-line or multi-line, including import type)
-  const content = lines.join("\n");
   const multiLineRe = /import\s+(?:type\s+)?\{([^}]+)\}\s+from/g;
   let mlMatch;
-  while ((mlMatch = multiLineRe.exec(content)) !== null) {
-    const importLine = content.slice(0, mlMatch.index).split("\n").length - 1;
-    const afterImport = content.slice(mlMatch.index + mlMatch[0].length);
+  while ((mlMatch = multiLineRe.exec(joined)) !== null) {
+    const importLine = joined.slice(0, mlMatch.index).split("\n").length - 1;
+    const afterImport = joined.slice(mlMatch.index + mlMatch[0].length);
+    const regexCache = new Map();
 
     for (const sym of mlMatch[1].split(",")) {
       const name = localAlias(sym);
       if (!name || checkedSymbols.has(name)) continue;
       checkedSymbols.add(name);
-      if (!new RegExp(`\\b${name}\\b`).test(afterImport)) {
+      let re = regexCache.get(name);
+      if (!re) {
+        re = new RegExp(`\\b${escapeRe(name)}\\b`);
+        regexCache.set(name, re);
+      }
+      if (!re.test(afterImport)) {
         findings.push({ check: "unused-import", file, symbol: name, importLine });
       }
     }
@@ -109,6 +146,8 @@ function scanTypeScript(lines, file) {
  * Scan a Go file for unused imports.
  */
 function scanGo(lines, file) {
+  const joined = lines.join("\n");
+  const offsets = buildLineOffsets(lines);
   const findings = [];
   let inImportBlock = false;
 
@@ -127,7 +166,7 @@ function scanGo(lines, file) {
     const alias = parseGoImportAlias(trimmedLine, inImportBlock);
     if (!alias || alias === "_" || alias === ".") continue;
 
-    if (isUnused(lines, alias, i)) {
+    if (isUnused(joined, offsets, alias, i)) {
       findings.push({ check: "unused-import", file, symbol: alias, importLine: i });
     }
   }
@@ -153,9 +192,15 @@ function parseGoImportAlias(trimmedLine, inImportBlock) {
 }
 
 /**
- * Scan a Python file for unused imports.
+ * Scan a Python file for unused imports. Handles backslash line-continuation
+ * (`from mod import foo, \` + continuation lines): symbol fragments are
+ * accumulated across physical lines before splitting on comma. importLine stays
+ * pinned to the original `from` line; the usage check starts after the LAST
+ * consumed continuation line so a continued name used later isn't falsely flagged.
  */
 function scanPython(lines, file) {
+  const joined = lines.join("\n");
+  const offsets = buildLineOffsets(lines);
   const findings = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -163,13 +208,26 @@ function scanPython(lines, file) {
     const fromImp = line.match(/^from\s+\S+\s+import\s+(.+)/);
     if (!fromImp) continue;
 
-    for (const sym of fromImp[1].split(",")) {
+    // Accumulate backslash-continued fragments; `last` = index of the final
+    // consumed physical line (usage is checked after it).
+    let symbols = fromImp[1];
+    let last = i;
+    while (symbols.trimEnd().endsWith("\\")) {
+      symbols = symbols.trimEnd().slice(0, -1);
+      if (last + 1 >= lines.length) break;
+      last += 1;
+      symbols += ` ${lines[last]}`;
+    }
+
+    for (const sym of symbols.split(",")) {
       const name = localAlias(sym);
-      if (!name || name === "*") continue;
-      if (isUnused(lines, name, i)) {
+      if (!name || name === "*" || name === "\\") continue;
+      if (isUnused(joined, offsets, name, last)) {
         findings.push({ check: "unused-import", file, symbol: name, importLine: i });
       }
     }
+
+    i = last; // skip past consumed continuation lines
   }
 
   return findings;
@@ -179,6 +237,8 @@ function scanPython(lines, file) {
  * Scan a Java file for unused imports.
  */
 function scanJava(lines, file) {
+  const joined = lines.join("\n");
+  const offsets = buildLineOffsets(lines);
   const findings = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -188,7 +248,7 @@ function scanJava(lines, file) {
 
     const segments = javaMatch[1].split(".");
     const name = segments[segments.length - 1];
-    if (isUnused(lines, name, i)) {
+    if (isUnused(joined, offsets, name, i)) {
       findings.push({ check: "unused-import", file, symbol: name, importLine: i });
     }
   }

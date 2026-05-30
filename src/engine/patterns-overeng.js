@@ -33,35 +33,59 @@ const implementsClauseRe = /implements\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if `importedSymbols` overlaps with `providedSymbols`.
- * Handles C# namespace-qualified imports by checking the last segment.
- */
-function hasSymbolOverlap(importedSymbols, providedSymbols) {
-  return [...importedSymbols].some((sym) => {
-    if (providedSymbols.has(sym)) return true;
-    if (sym.includes(".")) {
-      return providedSymbols.has(sym.split(".").pop());
-    }
-    return false;
-  });
-}
-
-/**
  * Build a fan-in count map: file -> number of other files that import from it.
+ *
+ * Uses an inverted index (symbol name -> set of provider files) so the cost is
+ * O(totalExports + totalImports) rather than O(files²). The result is identical
+ * to comparing every importer against every provider: a provider is counted once
+ * per importer that shares at least one symbol (the per-importer providerSet
+ * dedupes, matching the old `.some()` short-circuit semantics), and C#
+ * namespace-qualified imports still match on their last dotted segment.
  */
 function buildFanIn(fileContents, fileImportedSymbols, exportedByFile) {
   const fanIn = new Map();
   for (const file of fileContents.keys()) {
     fanIn.set(file, 0);
   }
-  for (const [importerFile, importedSymbols] of fileImportedSymbols) {
-    for (const [providerFile, providedSymbols] of exportedByFile) {
-      if (providerFile === importerFile) continue;
-      if (hasSymbolOverlap(importedSymbols, providedSymbols)) {
-        fanIn.set(providerFile, (fanIn.get(providerFile) ?? 0) + 1);
+
+  // Inverted index: exported symbol name -> set of files that export it.
+  // Export names are indexed verbatim — the old comparison only ever stripped
+  // dots off the *imported* symbol (C# namespace-qualified imports), checking
+  // the last segment against the raw export set. Indexing export-side last
+  // segments too would create matches the old code never made, so we don't.
+  const symbolToProviders = new Map();
+  for (const [providerFile, providedSymbols] of exportedByFile) {
+    for (const name of providedSymbols) {
+      let providers = symbolToProviders.get(name);
+      if (!providers) {
+        providers = new Set();
+        symbolToProviders.set(name, providers);
       }
+      providers.add(providerFile);
     }
   }
+
+  const addMatches = (providerSet, importerFile, key) => {
+    const providers = symbolToProviders.get(key);
+    if (!providers) return;
+    for (const providerFile of providers) {
+      if (providerFile !== importerFile) providerSet.add(providerFile);
+    }
+  };
+
+  for (const [importerFile, importedSymbols] of fileImportedSymbols) {
+    // Dedupe providers per importer: matching old `.some()` short-circuit, a
+    // provider sharing multiple symbols with this importer is still counted once.
+    const providerSet = new Set();
+    for (const sym of importedSymbols) {
+      addMatches(providerSet, importerFile, sym);
+      if (sym.includes(".")) addMatches(providerSet, importerFile, sym.split(".").pop());
+    }
+    for (const providerFile of providerSet) {
+      fanIn.set(providerFile, (fanIn.get(providerFile) ?? 0) + 1);
+    }
+  }
+
   return fanIn;
 }
 

@@ -17,11 +17,65 @@ function makeGetConfigHandler(projectPath) {
   };
 }
 
+const THRESHOLD_KEYS = [
+  "maxFileLines",
+  "maxComplexity",
+  "maxNesting",
+  "maxExportsPerFile",
+  "maxImportsPerFile",
+  "duplicateMinTokens",
+  "duplicateSimilarity",
+];
+
+const isStringArray = (value) =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * Validate the merged config shape before it reaches disk. Cross-field/shape
+ * validation lives here (not in a zod refine) so the MCP inputSchema stays
+ * visible to clients.
+ * @param {Record<string, unknown>} config
+ * @returns {string|null} An error message, or null if valid.
+ */
+function validateConfig(config) {
+  const { thresholds, exclude, disabledChecks, languages } = config;
+
+  if (thresholds !== undefined) {
+    if (typeof thresholds !== "object" || thresholds === null || Array.isArray(thresholds)) {
+      return "thresholds must be an object";
+    }
+    for (const key of THRESHOLD_KEYS) {
+      const value = thresholds[key];
+      if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+        return `thresholds.${key} must be a finite number`;
+      }
+    }
+  }
+
+  if (exclude !== undefined && !isStringArray(exclude)) {
+    return "exclude must be an array of strings";
+  }
+
+  if (disabledChecks !== undefined && !isStringArray(disabledChecks)) {
+    return "disabledChecks must be an array of strings";
+  }
+
+  if (languages !== undefined && languages !== "auto" && !isStringArray(languages)) {
+    return "languages must be 'auto' or an array of strings";
+  }
+
+  return null;
+}
+
 function makeUpdateConfigHandler(projectPath) {
   return async ({ overrides }) => {
     try {
       const current = await readConfig(projectPath);
       const updated = deepMerge(current, overrides);
+      const error = validateConfig(updated);
+      if (error) {
+        return fail(new Error(`Invalid config: ${error}`));
+      }
       await writeConfig(projectPath, updated);
       return ok(updated);
     } catch (err) {

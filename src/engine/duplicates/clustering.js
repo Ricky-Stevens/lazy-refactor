@@ -44,15 +44,24 @@ function makeUnionFind() {
   const parent = new Map();
   const rank = new Map();
 
+  // Iterative (not recursive) so a pathological parent chain can't overflow the
+  // stack; two passes give the same full path compression as the recursive form.
   function find(x) {
     if (!parent.has(x)) {
       parent.set(x, x);
       rank.set(x, 0);
+      return x;
     }
-    if (parent.get(x) !== x) {
-      parent.set(x, find(parent.get(x))); // path compression
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root);
+    // Point every node on the path directly at the root (path compression).
+    let node = x;
+    while (node !== root) {
+      const next = parent.get(node);
+      parent.set(node, root);
+      node = next;
     }
-    return parent.get(x);
+    return root;
   }
 
   function union(a, b) {

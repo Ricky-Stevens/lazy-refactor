@@ -1,17 +1,24 @@
 /**
  * Run-management tool registrations for the lazy-refactor MCP server.
  *
- * Tools: list_runs, set_active_run, set_run_status, delete_run
+ * Tools: list_runs, get_active_run, set_active_run, set_run_status, delete_run
  *
  * (run_scan creates a new run and resume_scan re-activates one + re-scans — both
  * live in tools-scan.js since they share the scan pipeline. set_active_run is the
  * lightweight switch that does NOT re-scan.)
  */
 
-import { emptySummary, getDb, summariesByRun } from "../state/findings-store.js";
-import { deleteRun, getActiveRunId, listRuns, setActiveRun, setRunStatus } from "../state/runs.js";
+import { emptySummary, getDb, summariesByRun, summary } from "../state/findings-store.js";
+import {
+  deleteRun,
+  getActiveRunId,
+  getRun,
+  listRuns,
+  setActiveRun,
+  setRunStatus,
+} from "../state/runs.js";
 import { fail, ok } from "./helpers.js";
-import { listRunsSchema, runIdSchema, setRunStatusSchema } from "./tools-schemas.js";
+import { emptySchema, listRunsSchema, runIdSchema, setRunStatusSchema } from "./tools-schemas.js";
 
 function makeListRunsHandler(projectPath) {
   return async ({ includeArchived } = {}) => {
@@ -24,6 +31,22 @@ function makeListRunsHandler(projectPath) {
         summary: summaries.get(r.id) ?? emptySummary(),
       }));
       return ok({ runs });
+    } catch (err) {
+      return fail(err);
+    }
+  };
+}
+
+function makeGetActiveRunHandler(projectPath) {
+  return async () => {
+    try {
+      // Reads must not create a run: getActiveRunId is non-creating, so a
+      // never-scanned project returns { run: null } rather than minting a phantom run.
+      const id = getActiveRunId(projectPath);
+      if (!id) return ok({ run: null, summary: emptySummary() });
+      const run = getRun(projectPath, id);
+      if (!run) return ok({ run: null, summary: emptySummary() });
+      return ok({ run, summary: summary(getDb(projectPath), id) });
     } catch (err) {
       return fail(err);
     }
@@ -84,6 +107,19 @@ export function registerRunTools(server, projectPath) {
       inputSchema: listRunsSchema,
     },
     makeListRunsHandler(projectPath),
+  );
+
+  server.registerTool(
+    "get_active_run",
+    {
+      description:
+        "Return the CURRENT active run (id, status, scan path, scanId, timestamps) plus its " +
+        "findings summary — the run that /report, /fix, /status and all triage tools operate on. " +
+        "Returns { run, summary }; run is null on a never-scanned project. Cheaper than list_runs " +
+        "when you only need the active run's identity and path, not every run.",
+      inputSchema: emptySchema,
+    },
+    makeGetActiveRunHandler(projectPath),
   );
 
   server.registerTool(

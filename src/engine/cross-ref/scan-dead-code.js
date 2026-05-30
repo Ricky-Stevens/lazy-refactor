@@ -23,49 +23,64 @@ export async function getRecentlyAddedFiles(repoPath, days = 30) {
       "--name-only",
       "--pretty=format:",
     ];
-    execFile("git", args, (err, stdout) => {
-      if (err) {
-        resolve(new Set());
-        return;
-      }
-      const files = stdout
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((rel) => join(repoPath, rel));
-      resolve(new Set(files));
-    });
+    execFile(
+      "git",
+      args,
+      { timeout: 10000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      (err, stdout) => {
+        if (err) {
+          resolve(new Set());
+          return;
+        }
+        const files = stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((rel) => join(repoPath, rel));
+        resolve(new Set(files));
+      },
+    );
   });
+}
+
+/**
+ * Count whole-word occurrences of `name` in `text`.
+ * @param {string} name
+ * @param {string} text
+ * @returns {number}
+ */
+function countWordMatches(name, text) {
+  if (!text) return 0;
+  const matches = text.match(new RegExp(`\\b${name}\\b`, "g"));
+  return matches ? matches.length : 0;
 }
 
 /**
  * Determine whether a single exported symbol is unused.
  * Returns a finding object if unused, or null if the symbol is in use.
  *
- * Go and C# use grep-based matching against other files of the same language
- * (import sets don't capture individual symbol names for those languages).
+ * Go and C# use grep-based matching against the precomputed same-language
+ * corpus (import sets don't capture individual symbol names for those
+ * languages). The corpus is built ONCE for the whole scan, so the symbol's
+ * OWN file is included; self-references are subtracted by comparing the
+ * whole-corpus match count against the own-file match count — a symbol is
+ * "used" only if it appears in some OTHER file of the same language. This
+ * preserves the prior per-export self-exclusion semantic without rebuilding
+ * the corpus on every export.
  * For TS/Python/Java the per-language import set is used.
  */
-function checkExport(exp, file, language, fileData, importsByLanguage, baseConfidence) {
+function checkExport(exp, file, language, ownContent, corpus, importsByLanguage, baseConfidence) {
   const { name, line } = exp;
 
-  // Go: grep other .go files for the symbol name.
+  // Go: match the precomputed .go corpus, excluding the symbol's own file.
   if (language === "go") {
-    const otherContent = fileData
-      .filter((fd) => fd.file !== file && fd.file.endsWith(".go"))
-      .map((fd) => fd.content)
-      .join("\n");
-    if (new RegExp(`\\b${name}\\b`).test(otherContent)) return null;
+    if (countWordMatches(name, corpus.go) > countWordMatches(name, ownContent)) return null;
     return { check: "dead-code", file, symbol: name, exportLine: line, confidence: 0.7 };
   }
 
-  // C#: namespace `using` directives don't map to symbol names — grep other .cs files.
+  // C#: namespace `using` directives don't map to symbol names — match the .cs corpus.
   if (language === "csharp") {
-    const otherContent = fileData
-      .filter((fd) => fd.file !== file && fd.file.endsWith(".cs"))
-      .map((fd) => fd.content)
-      .join("\n");
-    if (new RegExp(`\\b${name}\\b`).test(otherContent)) return null;
+    if (countWordMatches(name, corpus.csharp) > countWordMatches(name, ownContent)) return null;
     return { check: "dead-code", file, symbol: name, exportLine: line, confidence: 0.7 };
   }
 
@@ -111,19 +126,41 @@ export async function scanDeadCode(path, _rules = {}, options = {}) {
     for (const sym of imports) importsByLanguage[language].add(sym);
   }
 
+  // Precompute the per-language source corpus ONCE (not per export) for the
+  // grep-based Go/C# dead-code checks. Rebuilding this inside the export loop
+  // was O(exports × totalContent) — quadratic on large repos.
+  const corpus = {
+    go: fileData
+      .filter((fd) => fd.language === "go")
+      .map((fd) => fd.content)
+      .join("\n"),
+    csharp: fileData
+      .filter((fd) => fd.language === "csharp")
+      .map((fd) => fd.content)
+      .join("\n"),
+  };
+
   // Recently-added files get a small confidence boost — more likely to be
   // pivot debris left over from abandoned AI-assisted refactors.
   const recentFiles = await getRecentlyAddedFiles(path, 30);
 
   const findings = [];
-  for (const { file, language, exports } of fileData) {
+  for (const { file, language, content, exports } of fileData) {
     if (isEntryPoint(file) || isTestFile(file)) continue;
 
     let baseConfidence = language === "python" ? 0.6 : 0.9;
     if (recentFiles.has(file)) baseConfidence = Math.min(1, baseConfidence + 0.05);
 
     for (const exp of exports) {
-      const finding = checkExport(exp, file, language, fileData, importsByLanguage, baseConfidence);
+      const finding = checkExport(
+        exp,
+        file,
+        language,
+        content,
+        corpus,
+        importsByLanguage,
+        baseConfidence,
+      );
       if (finding) findings.push(finding);
     }
   }

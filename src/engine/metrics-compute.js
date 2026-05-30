@@ -37,8 +37,12 @@ function countBranchPoints(stripped) {
   const q = (stripped.match(/\?/g) ?? []).length;
   const qDot = (stripped.match(/\?\./g) ?? []).length;
   const qq = (stripped.match(/\?\?/g) ?? []).length;
-  // `??` contains two `?` chars; subtract both plus the extra from `?.`
-  count += q - qDot - qq * 2;
+  // TypeScript optional markers (`x?: T`, `prop?: T`, `m?(): void`) contain a bare
+  // `?` but are not branch points. Match `?` preceded by an identifier and followed
+  // by `:`, `(`, or `)` — `??` and `?.` are excluded by the [:)(] character class.
+  const qOpt = (stripped.match(/\w\s*\?\s*[:)(]/g) ?? []).length;
+  // `??` contains two `?` chars; subtract both plus the extra from `?.` and optionals
+  count += q - qDot - qq * 2 - qOpt;
 
   return count;
 }
