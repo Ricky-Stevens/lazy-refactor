@@ -124,6 +124,18 @@ export const groupSchema = z.object({
     .optional()
     .describe("Dimension to group by (default 'file')."),
   filter: filterShape.optional(),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Max groups to return per call (default 200). Page with offset while truncated."),
+  offset: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Group offset for paging (default 0)."),
 });
 
 export const pruneSchema = z.object({

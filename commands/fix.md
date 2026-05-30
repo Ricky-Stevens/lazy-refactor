@@ -75,19 +75,23 @@ The only mid-run stop allowed is a genuine environment failure (e.g. the test co
    - If the user does not confirm, abort with no changes made
    - **This is the only gate.** Once confirmed, go straight through steps 3–6 to completion without returning here.
 
-3. **Dispatch the fixer agent in batches, not one-per-finding:**
+3. **Dispatch the fixer agent in batches, not one-per-finding — and page the groups:**
    - **Group server-side with `group_findings`** — call it with `by: "file"` and the same
      filter from step 1. It returns `{ groups: [{ key: file, count, ids }], totalGroups,
-     totalFindings }` — the file→finding-ID map you need, **without** any finding bodies.
-     Never fetch all findings and group them yourself, and **never read raw tool-result files
-     off disk** to build the grouping; `group_findings` is the supported path and its response
-     stays small even for thousands of findings. (Duplicate clusters group under their primary
-     file, so they remain a single unit.)
-   - Dispatch **one fixer agent per group**, passing it that group's `ids`. The fixer calls
-     `get_findings_by_ids` to load just its own findings' details. Independent groups (different
-     files) can be dispatched in parallel.
+     totalFindings, offset, limit, returnedGroups, truncated }` — the file→finding-ID map you
+     need, **without** any finding bodies. Never fetch all findings and group them yourself,
+     and **never read raw tool-result files off disk** to build the grouping.
+   - **One file = one group = one fixer.** Each group's `key` is a single root-relative path
+     and every finding for that file is in it (duplicate clusters group under their primary
+     file). Never dispatch two fixers against the same file — concurrent edits corrupt it.
+   - **Page through the groups; do NOT pull all of them at once.** `group_findings` returns at
+     most `limit` groups (default 200, count-desc). Process the returned wave fully — dispatch
+     **one fixer agent per group in parallel** (passing only that group's `ids`; the fixer calls
+     `get_findings_by_ids` for its own details), collect outcomes — and only THEN, **if
+     `truncated` is true**, call `group_findings` again with `offset += limit` for the next
+     wave. A 235-group run is several bounded waves, not one giant payload that bloats context.
    - This is the key throughput change: a 1,000-finding run becomes ~N file-group dispatches
-     instead of 1,000 serial agent + tool-call round-trips.
+     across a few waves instead of 1,000 serial agent + tool-call round-trips.
    - Each fixer reads its findings' details, understands context, makes the minimal targeted
      change per finding, runs tests, and reports per-finding outcomes.
 

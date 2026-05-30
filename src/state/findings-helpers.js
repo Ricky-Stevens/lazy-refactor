@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isAbsolute, relative, sep } from "node:path";
 
 export const VALID_STATUSES = [
   "open",
@@ -19,6 +20,49 @@ export function generateFindingId(finding) {
   const location = finding.locations?.[0] ?? {};
   const raw = `${finding.check ?? ""}:${location.file ?? ""}:${location.startLine ?? ""}:${finding.description ?? ""}`;
   return `f-${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * Make a single file path root-relative with forward-slash separators. Absolute
+ * paths are rebased onto `root`; already-relative paths are left as-is (only
+ * separator-normalised). This is the canonical representation for a finding's
+ * file — group keys, the locations[0].file index, and the finding-id hash all
+ * depend on it being consistent regardless of how a scanner emitted the path.
+ * @param {string} file
+ * @param {string} root
+ * @returns {string}
+ */
+function toRootRelative(file, root) {
+  let rel = isAbsolute(file) ? relative(root, file) : file;
+  if (sep !== "/") rel = rel.split(sep).join("/");
+  return rel;
+}
+
+/**
+ * Normalise every finding's location paths to root-relative, IN PLACE. The
+ * engine's scanners are inconsistent — `collectFiles` yields absolute paths
+ * (dead-code, metrics, duplicates) while the grep-based pattern scanner yields
+ * relative ones — so without this, the SAME physical file lands under both an
+ * absolute and a relative key. That fragments `group_findings by:file` (two
+ * fixer agents dispatched against one file) and destabilises the id hash. Run
+ * this at the ingestion chokepoint BEFORE stamping so ids are computed from the
+ * canonical path.
+ * @param {Array<object>} findings
+ * @param {string} root  Absolute scan root.
+ * @returns {Array<object>} the same array (mutated)
+ */
+export function normalizeFindingPaths(findings, root) {
+  if (!root) return findings;
+  for (const f of findings) {
+    if (Array.isArray(f.locations)) {
+      for (const loc of f.locations) {
+        if (loc && typeof loc.file === "string") loc.file = toRootRelative(loc.file, root);
+      }
+    }
+    // Duplicate-pair findings carry a second file outside `locations`.
+    if (typeof f.fileB === "string") f.fileB = toRootRelative(f.fileB, root);
+  }
+  return findings;
 }
 
 // Stale findings are excluded from summary counts. Used by the loadFindings compat

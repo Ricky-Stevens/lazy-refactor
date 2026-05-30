@@ -400,6 +400,110 @@ describe("groupFindings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// addFindings — path normalization (one physical file => one group)
+// ---------------------------------------------------------------------------
+
+describe("addFindings — path normalization", () => {
+  it("collapses absolute and relative paths for the same file into one group", async () => {
+    await addFindings(
+      projectPath,
+      [
+        // Same physical file, emitted absolute (collectFiles-based scanners)...
+        {
+          ...makeFinding(),
+          check: "dead-code",
+          locations: [{ file: "/repo/src/x.ts", startLine: 1 }],
+        },
+        // ...and relative (grep-based pattern scanner).
+        {
+          ...makeFinding(),
+          check: "eval-usage-ts",
+          locations: [{ file: "src/x.ts", startLine: 2 }],
+        },
+      ],
+      "scan-1",
+      "/repo",
+    );
+
+    const { groups, totalGroups } = await groupFindings(projectPath);
+    expect(totalGroups).toBe(1);
+    expect(groups[0].key).toBe("src/x.ts");
+    expect(groups[0].count).toBe(2);
+  });
+
+  it("normalizes the secondary file (fileB) of a duplicate pair", async () => {
+    await addFindings(
+      projectPath,
+      [
+        {
+          ...makeFinding(),
+          check: "duplicate",
+          locations: [{ file: "/repo/src/a.ts", startLine: 1 }],
+          fileB: "/repo/src/b.ts",
+        },
+      ],
+      "scan-1",
+      "/repo",
+    );
+
+    const { groups } = await groupFindings(projectPath);
+    const { findings } = await getFindingsByIds(projectPath, [groups[0].ids[0]]);
+    expect(findings[0].locations[0].file).toBe("src/a.ts");
+    expect(findings[0].fileB).toBe("src/b.ts");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupFindings — pagination
+// ---------------------------------------------------------------------------
+
+describe("groupFindings pagination", () => {
+  beforeEach(async () => {
+    // 5 files with descending finding counts (5,4,3,2,1) for a deterministic order.
+    const findings = [];
+    const counts = { "a.ts": 5, "b.ts": 4, "c.ts": 3, "d.ts": 2, "e.ts": 1 };
+    for (const [file, n] of Object.entries(counts)) {
+      for (let i = 0; i < n; i++) {
+        findings.push({
+          ...makeFinding(),
+          check: `chk-${file}-${i}`,
+          locations: [{ file: `src/${file}`, startLine: i + 1 }],
+        });
+      }
+    }
+    await addFindings(projectPath, findings, "scan-1", "/repo");
+  });
+
+  it("returns a bounded page with paging metadata and truncated flag", async () => {
+    const page = await groupFindings(projectPath, {}, "file", { limit: 2, offset: 0 });
+    expect(page.totalGroups).toBe(5);
+    expect(page.totalFindings).toBe(15);
+    expect(page.returnedGroups).toBe(2);
+    expect(page.truncated).toBe(true);
+    // Count-desc order: a.ts (5), b.ts (4).
+    expect(page.groups.map((g) => g.key)).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("pages deterministically across offsets with no overlap or gaps", async () => {
+    const seen = [];
+    for (let offset = 0; ; offset += 2) {
+      const page = await groupFindings(projectPath, {}, "file", { limit: 2, offset });
+      seen.push(...page.groups.map((g) => g.key));
+      if (!page.truncated) break;
+    }
+    expect(seen).toEqual(["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts"]);
+    expect(new Set(seen).size).toBe(5);
+  });
+
+  it("returns all groups (truncated false) when no limit is given", async () => {
+    const page = await groupFindings(projectPath, {}, "file");
+    expect(page.returnedGroups).toBe(5);
+    expect(page.truncated).toBe(false);
+    expect(page.limit).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getFindingsByIds
 // ---------------------------------------------------------------------------
 

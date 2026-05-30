@@ -153,9 +153,16 @@ function makeCountHandler(projectPath) {
 }
 
 function makeGroupHandler(projectPath) {
-  return async ({ by, filter }) => {
+  return async ({ by, filter, limit, offset }) => {
     try {
-      return ok(await groupFindings(projectPath, filter ?? {}, by ?? "file"));
+      // Default-cap the page so a bare call on a large run can't dump every group's
+      // ids into one payload (the failure mode this paging exists to prevent).
+      return ok(
+        await groupFindings(projectPath, filter ?? {}, by ?? "file", {
+          limit: limit ?? 200,
+          offset: offset ?? 0,
+        }),
+      );
     } catch (err) {
       return fail(err);
     }
@@ -239,8 +246,11 @@ export function registerStateTools(server, projectPath) {
         "Group findings matching a filter by a dimension (default 'file'), returning each " +
         "group's key, count, and member finding ids — WITHOUT the bulky finding bodies. " +
         "Use this to plan batched work (e.g. one fixer per file) at scale: get the file→ids " +
-        "map in one small call, then fetch each group's details with get_findings_by_ids. " +
-        "Returns { by, groups: [{ key, count, ids }], totalGroups, totalFindings }.",
+        "map, then fetch each group's details with get_findings_by_ids. Paginated: returns up " +
+        "to `limit` groups (default 200) ordered by count desc; when `truncated` is true, " +
+        "advance `offset` by `limit` and dispatch each wave before fetching the next. Returns " +
+        "{ by, groups: [{ key, count, ids }], totalGroups, totalFindings, offset, limit, " +
+        "returnedGroups, truncated }.",
       inputSchema: groupSchema,
     },
     makeGroupHandler(projectPath),

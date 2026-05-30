@@ -16,6 +16,7 @@
 import {
   computeSummary,
   matchesFilter,
+  normalizeFindingPaths,
   pickPatch,
   stampFindings,
   VALID_STATUSES,
@@ -96,7 +97,11 @@ export async function saveFindings(projectPath, state) {
 
 export async function addFindings(projectPath, newFindings, scanId, scanPath) {
   const { db, runId } = writeCtx(projectPath);
-  const stamped = stampFindings(newFindings);
+  // Canonicalise paths to root-relative BEFORE stamping — the id hash and the
+  // group-by-file key both read locations[0].file, so this is what stops one
+  // physical file from splitting across absolute/relative keys.
+  const normalized = normalizeFindingPaths(newFindings, scanPath);
+  const stamped = stampFindings(normalized);
   const newIds = stamped.map((f) => f.id);
 
   db.transaction(() => {
@@ -330,30 +335,54 @@ export async function countFindings(projectPath, filter = {}) {
  * @param {object} [filter]
  * @param {'file'|'category'|'check'|'severity'|'language'|'status'} [by]
  */
-export async function groupFindings(projectPath, filter = {}, by = "file") {
+export async function groupFindings(
+  projectPath,
+  filter = {},
+  by = "file",
+  { limit, offset = 0 } = {},
+) {
   const { db, runId } = readCtx(projectPath);
 
+  let groups;
   if (by !== "file") {
-    const groups = groupByColumn(db, runId, filter, by);
-    const totalFindings = groups.reduce((n, g) => n + g.count, 0);
-    return { by, groups, totalGroups: groups.length, totalFindings };
+    groups = groupByColumn(db, runId, filter, by);
+  } else {
+    const rows = selectScalar(db, runId, filter);
+    const matched = filter.file == null ? rows : rows.filter((f) => matchesFilter(f, filter));
+    const map = new Map();
+    for (const f of matched) {
+      const key = f.locations?.[0]?.file ?? null;
+      let g = map.get(key);
+      if (!g) {
+        g = { key, count: 0, ids: [] };
+        map.set(key, g);
+      }
+      g.count += 1;
+      g.ids.push(f.id);
+    }
+    groups = [...map.values()];
   }
 
-  const rows = selectScalar(db, runId, filter);
-  const matched = filter.file == null ? rows : rows.filter((f) => matchesFilter(f, filter));
-  const map = new Map();
-  for (const f of matched) {
-    const key = f.locations?.[0]?.file ?? null;
-    let g = map.get(key);
-    if (!g) {
-      g = { key, count: 0, ids: [] };
-      map.set(key, g);
-    }
-    g.count += 1;
-    g.ids.push(f.id);
-  }
-  const groups = [...map.values()].sort((a, b) => b.count - a.count);
-  return { by, groups, totalGroups: groups.length, totalFindings: matched.length };
+  // Stable order (count desc, then key) so limit/offset paging is deterministic —
+  // a caller can fetch one bounded wave of groups, dispatch it, then advance the
+  // offset, instead of pulling every group's ids into one (context-bloating) payload.
+  groups.sort((a, b) => b.count - a.count || String(a.key).localeCompare(String(b.key)));
+
+  const totalGroups = groups.length;
+  const totalFindings = groups.reduce((n, g) => n + g.count, 0);
+  const start = offset > 0 ? offset : 0;
+  const page = limit != null ? groups.slice(start, start + limit) : groups.slice(start);
+
+  return {
+    by,
+    groups: page,
+    totalGroups,
+    totalFindings,
+    offset: start,
+    limit: limit ?? null,
+    returnedGroups: page.length,
+    truncated: start + page.length < totalGroups,
+  };
 }
 
 /**
