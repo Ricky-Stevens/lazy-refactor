@@ -29,8 +29,13 @@ export const filterShape = z
     language: z.union([z.string(), z.array(z.string())]).optional(),
     check: z.union([z.string(), z.array(z.string())]).optional(),
     file: z.union([z.string(), z.array(z.string())]).optional(),
+    fixable: z.boolean().optional(),
   })
-  .describe("Filter by severity, category, status, language, check, and/or file");
+  .describe(
+    "Filter by severity, category, status, language, check, file, and/or fixable. " +
+      "fixable:true selects findings the fixer can auto-apply (missing flag defaults to fixable); " +
+      "fixable:false selects findings that need manual intervention.",
+  );
 
 export const findingsSchema = z.object({
   filter: filterShape.optional(),

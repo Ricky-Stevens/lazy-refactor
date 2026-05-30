@@ -5,10 +5,12 @@ import { join } from "node:path";
 import {
   addFindings,
   clearFindings,
+  countFindings,
   getFindings,
   getFindingsByIds,
   getSummary,
   loadFindings,
+  updateFindings,
 } from "./findings.js";
 
 function makeFinding(overrides = {}) {
@@ -119,6 +121,60 @@ describe("getFindings", () => {
     const results = await getFindings(projectPath, { severity: "high", category: "security" });
     expect(results).toHaveLength(1);
     expect(results[0].id).toBe("f-00000002");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fixable filter (blob-extracted, SQL-native)
+// ---------------------------------------------------------------------------
+
+describe("fixable filter", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        { ...makeFinding(), id: "f-fix-1", severity: "high", fixable: true },
+        { ...makeFinding(), id: "f-fix-2", severity: "low", fixable: true },
+        { ...makeFinding(), id: "f-manual", severity: "critical", fixable: false },
+        // No fixable key at all — must default to fixable (matches mapper default).
+        { ...makeFinding(), id: "f-default", severity: "medium", fixable: undefined },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("fixable:true selects fixable findings and treats a missing flag as fixable", async () => {
+    const ids = (await getFindings(projectPath, { fixable: true })).map((f) => f.id).sort();
+    expect(ids).toEqual(["f-default", "f-fix-1", "f-fix-2"]);
+  });
+
+  it("fixable:false selects only explicitly non-fixable findings", async () => {
+    const results = await getFindings(projectPath, { fixable: false });
+    expect(results.map((f) => f.id)).toEqual(["f-manual"]);
+  });
+
+  it("combines fixable with a scalar filter", async () => {
+    const results = await getFindings(projectPath, { fixable: true, severity: "high" });
+    expect(results.map((f) => f.id)).toEqual(["f-fix-1"]);
+  });
+
+  it("countFindings honors the fixable filter without materialising", async () => {
+    expect(await countFindings(projectPath, { fixable: true })).toBe(3);
+    expect(await countFindings(projectPath, { fixable: false })).toBe(1);
+  });
+
+  it("update_findings filter mode is scoped by fixable in a single set-based update", async () => {
+    const { updated } = await updateFindings(projectPath, {
+      filter: { fixable: false },
+      status: "ignored",
+    });
+    expect(updated).toBe(1);
+    expect((await getFindings(projectPath, { status: "ignored" })).map((f) => f.id)).toEqual([
+      "f-manual",
+    ]);
+    // Fixable findings are untouched.
+    expect(await countFindings(projectPath, { fixable: true, status: "open" })).toBe(3);
   });
 });
 

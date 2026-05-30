@@ -68,9 +68,9 @@ export function selectByIds(db, runId, ids) {
 }
 
 // Build the WHERE clause for a run plus the scalar filter keys (severity/category/
-// language/check/status). Stale findings are excluded unless the filter constrains
-// status. The `file` dimension is intentionally left to findings.js#matchesFilter
-// (multi-location semantics).
+// language/check/status, plus blob-extracted `fixable`). Stale findings are excluded
+// unless the filter constrains status. The `file` dimension is intentionally left to
+// findings.js#matchesFilter (multi-location semantics — the only JS-side filter).
 function buildScalarWhere(runId, filter) {
   const conds = ["run_id = ?"];
   const params = [runId];
@@ -86,6 +86,17 @@ function buildScalarWhere(runId, filter) {
   if (filter.check != null) inClause("check_name", filter.check);
   if (filter.status != null) inClause("status", filter.status);
   else conds.push("status != 'stale'");
+
+  // `fixable` is not a denormalised column (it's not a filterable index dimension):
+  // extract it straight from the JSON blob. A missing flag defaults to fixable, matching
+  // the mapper default, so fixable:true never silently drops an un-flagged finding.
+  if (filter.fixable != null) {
+    conds.push(
+      filter.fixable
+        ? "IFNULL(json_extract(data, '$.fixable'), 1) = 1"
+        : "json_extract(data, '$.fixable') = 0",
+    );
+  }
 
   return { where: `WHERE ${conds.join(" AND ")}`, params };
 }

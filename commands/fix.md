@@ -27,11 +27,25 @@ Apply fixes to code quality issues identified in scans, with test verification a
 
 ## Behavior
 
-1. **Parse the target**:
-   - If a finding ID, validate it exists and is open (bypass fixable check — user override)
-   - If a severity level, fetch all open findings at that level **with `fixable: true`**
-   - If `all`, fetch all open findings **with `fixable: true`**
-   - When selecting more than a handful of findings, call `get_findings` with `compact: true` so the response stays small at scale. Use the `severity`/`category`/`file`/`check` filters to fetch exactly the set you need rather than paginating the whole store.
+1. **Parse the target into a filter**:
+   - If a finding ID, fetch it with `get_findings_by_ids` and validate it is open (bypass the
+     fixable check — an explicit ID is a user override).
+   - If a severity level, the filter is `{ status: "open", fixable: true, severity: <level(s)> }`
+     (`high` ⇒ `["critical","high"]`).
+   - If `all`, the filter is `{ status: "open", fixable: true }`.
+
+   **Never bulk-load the store.** `fixable` is a first-class filter — combine it with
+   `status`/`severity`/`category`/`file`/`check` so the query returns exactly the set you intend
+   to fix. Then:
+   - **Size first:** call `count_findings` with the filter to learn the total. Do NOT fetch
+     everything just to count it.
+   - **Page through it:** call `get_findings` with the filter, `compact: true`, and explicit
+     `limit`/`offset` (e.g. `limit: 200`), advancing `offset` by `limit` until you have read the
+     full count. The response carries `total` and a `truncated` flag — keep paging while
+     `truncated` is true. Process each page (group by file, dispatch fixers) before fetching the
+     next, so no single payload is ever large.
+   - If a page is still unwieldy, narrow the filter further (per `category`/`severity`) rather
+     than widening the page. Reading raw tool-result files off disk is never necessary.
 
 2. **Confirm with the user** before making any changes:
    - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)

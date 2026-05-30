@@ -214,12 +214,12 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
 
 /**
  * Return findings matching the given filter (see matchesFilter for semantics).
- * Supported keys are severity, category, status, language, check, and file. SQL is
- * authoritative for the scalar keys; matchesFilter runs only for the multi-location
- * `file` dimension it alone can express.
+ * Supported keys are severity, category, status, language, check, fixable, and file.
+ * SQL is authoritative for the scalar keys (including blob-extracted `fixable`);
+ * matchesFilter runs only for the multi-location `file` dimension it alone can express.
  *
  * @param {string} projectPath
- * @param {{ severity?, category?, status?, language?, check?, file? }} [filter]
+ * @param {{ severity?, category?, status?, language?, check?, fixable?, file? }} [filter]
  */
 export async function getFindings(projectPath, filter = {}) {
   const { db, runId } = readCtx(projectPath);
