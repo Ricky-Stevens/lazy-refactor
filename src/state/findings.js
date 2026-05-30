@@ -120,10 +120,14 @@ export async function updateFinding(projectPath, findingId, updates = {}) {
   const { db, runId } = readCtx(projectPath);
   const prev = selectByIds(db, runId, [findingId])[0];
   if (!prev) return null;
-  applyPatches(db, runId, [{ id: findingId, status: updates.status, notes: updates.notes }]);
+  applyPatches(db, runId, [{ id: findingId, ...pickPatch(updates) }]);
   // Overlay the patch in JS (?? mirrors the COALESCE: undefined leaves prior value)
   // instead of a second read.
-  const next = { ...prev, status: updates.status ?? prev.status };
+  const next = {
+    ...prev,
+    status: updates.status ?? prev.status,
+    severity: updates.severity ?? prev.severity,
+  };
   const notes = updates.notes ?? prev.notes;
   if (notes != null) next.notes = notes;
   else delete next.notes;
@@ -131,12 +135,12 @@ export async function updateFinding(projectPath, findingId, updates = {}) {
 }
 
 /**
- * Apply many status/notes changes in one transaction — the batch path for large
- * refactors. Three mutually exclusive selection modes:
+ * Apply many status/notes/severity changes in one transaction — the batch path for
+ * large refactors. Three mutually exclusive selection modes:
  *
- *   { updates: [{ id, status?, notes? }, ...] }   per-item patches (heterogeneous)
- *   { ids: [...], status?, notes? }               one patch applied to listed ids
- *   { filter: {...}, status?, notes? }            one patch applied to matching findings
+ *   { updates: [{ id, status?, notes?, severity? }, ...] }  per-item patches (heterogeneous)
+ *   { ids: [...], status?, notes?, severity? }              one patch applied to listed ids
+ *   { filter: {...}, status?, notes?, severity? }           one patch applied to matching findings
  *
  * `ids` and `filter` modes apply the shared patch set-based (single/chunked
  * UPDATE, no row materialisation). The presence check and the write share one
@@ -145,7 +149,10 @@ export async function updateFinding(projectPath, findingId, updates = {}) {
  *
  * @returns {Promise<{ updated: number, notFound: string[], summary: object }>}
  */
-export async function updateFindings(projectPath, { updates, ids, status, notes, filter } = {}) {
+export async function updateFindings(
+  projectPath,
+  { updates, ids, status, notes, severity, filter } = {},
+) {
   const { db, runId } = readCtx(projectPath);
 
   // Per-item heterogeneous patches: validate presence + apply atomically.
@@ -169,7 +176,7 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
               missingSeen.add(p.id);
               missing.push(p.id);
             }
-          } else if (p.status !== undefined || p.notes !== undefined) {
+          } else if (p.status !== undefined || p.notes !== undefined || p.severity !== undefined) {
             byId.set(p.id, p);
           }
         }
@@ -181,7 +188,7 @@ export async function updateFindings(projectPath, { updates, ids, status, notes,
     return { updated, notFound, summary: summary(db, runId) };
   }
 
-  const patch = pickPatch({ status, notes });
+  const patch = pickPatch({ status, notes, severity });
 
   // Filter mode: a single set-based UPDATE when no multi-location file dimension.
   if (filter) {

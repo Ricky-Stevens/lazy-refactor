@@ -37,11 +37,12 @@ export function computeSummary(findings) {
   return { totalFindings: active.length, bySeverity, byCategory, byStatus };
 }
 
-/** Extract a status/notes patch, including only fields that were supplied. */
-export function pickPatch({ status, notes } = {}) {
+/** Extract a status/notes/severity patch, including only fields that were supplied. */
+export function pickPatch({ status, notes, severity } = {}) {
   const patch = {};
   if (status !== undefined) patch.status = status;
   if (notes !== undefined) patch.notes = notes;
+  if (severity !== undefined) patch.severity = severity;
   return patch;
 }
 

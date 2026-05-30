@@ -21,29 +21,47 @@ Scan the codebase for code quality issues using deterministic analysis and targe
 
 ## Behavior
 
-> **Just run it.** A bare `/scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Dispatch the scan, let it finish, and report once. Don't stop to ask questions or check in mid-scan.
+> **Just run it.** A bare `/scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Drive the whole flow (scan → assess → report) to completion and report once. Don't stop to ask questions or check in mid-scan.
+
+This command orchestrates two kinds of worker agent — the same command-orchestrates,
+workers-are-leaves pattern `/fix` uses. The **scanner** runs the fast deterministic
+scan; the **assessor** deep-triages the four subjective categories in parallel. The
+workers never dispatch each other — *this command* fans them out.
 
 1. **Parse arguments**: Extract path, focus categories, and exclusion patterns.
 
-2. **Dispatch the scanner agent**: Send the scan request to the scanner agent with:
-   - The target path
-   - Requested focus areas (or all if none specified)
-   - Exclusion patterns to avoid scanning irrelevant code
+2. **Dispatch the scanner agent** with the target path, focus areas (or all), and
+   exclusion patterns. The scanner detects languages, runs the engine scans, persists
+   findings, and returns a structured summary — **including the per-category counts for
+   the four subjective categories**, which are the exact stored `category` strings
+   `modularity`, `comment-quality`, `complexity` (over-engineering), and `consistency`
+   (inconsistent patterns). The scanner does NOT triage these; it makes no `Read` calls.
 
-3. **Collect results**: The scanner will:
-   - Detect project languages
-   - Run appropriate quality checks
-   - Apply AI assessment to ambiguous findings
-   - Persist findings to the findings store
+3. **Fan out assessor agents in parallel** over the subjective findings. The subjective
+   set is exactly those four `category` values: `modularity`, `comment-quality`,
+   `complexity`, `consistency`.
+   - If the scanner reports zero findings across all four, **skip this step** — there is
+     nothing to assess.
+   - Otherwise, for each of those four categories that is non-empty, get its finding IDs
+     with `group_findings` (`by: "category"` — match on the literal strings above; or
+     `by: "file"` then filter to a subjective category to split a large category into
+     file-group batches). Never bulk-load finding bodies here.
+   - Dispatch **one assessor agent per category** (or per file-group for large
+     categories), passing it that batch's IDs. Independent batches run in parallel —
+     this is the parallelism that makes the scan both faster and more thorough than a
+     single serial triage pass. Each assessor loads its own findings, assesses them, and
+     writes its verdicts in one batched `update_findings` call.
 
 4. **Handle errors**:
    - If the path does not exist, report an error
    - If no valid files are found in the path, report that no scannable files were found
-   - If the scanner encounters an error, display the error details and advise the user
+   - If the scanner or an assessor encounters an error, display the error details and advise the user. One assessor failing does not abort the others or the report.
 
-5. **Report output**: Display a summary of findings including:
+5. **Report output** — build this AFTER assessors finish, from `get_summary` /
+   `count_findings` / paged `get_findings` (small, SQL-side counts; never materialise the
+   whole set). Display:
    - The new run ID (each scan creates a new run)
-   - Count of findings by severity and category
+   - Count of findings by severity and category (post-assessment — dismissed findings now sit at `false-positive`)
    - Brief summary of top issues
    - Instructions for viewing detailed findings with `/lazy-refactor report`
 

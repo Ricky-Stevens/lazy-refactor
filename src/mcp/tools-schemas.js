@@ -21,6 +21,8 @@ export const STATUS_ENUM = z.enum([
   "stale",
 ]);
 
+export const SEVERITY_ENUM = z.enum(["critical", "high", "medium", "low"]);
+
 export const filterShape = z
   .object({
     severity: z.union([z.string(), z.array(z.string())]).optional(),
@@ -75,8 +77,12 @@ export const byIdsSchema = z.object({
 
 export const updateFindingSchema = z.object({
   id: z.string().describe("Finding ID"),
-  status: STATUS_ENUM.describe("New status"),
+  status: STATUS_ENUM.optional().describe("New status"),
   notes: z.string().max(MAX_NOTES).optional().describe("Optional notes"),
+  severity: SEVERITY_ENUM.optional().describe(
+    "Override the finding's severity (e.g. after assessment). Updates the indexed column " +
+      "used by report ordering and `/fix <severity>`.",
+  ),
 });
 
 export const updateFindingsSchema = z.object({
@@ -86,24 +92,28 @@ export const updateFindingsSchema = z.object({
         id: z.string(),
         status: STATUS_ENUM.optional(),
         notes: z.string().max(MAX_NOTES).optional(),
+        severity: SEVERITY_ENUM.optional(),
       }),
     )
     .max(MAX_BATCH)
     .optional()
-    .describe("Per-item patches: [{id, status?, notes?}]. Use for mixed changes."),
+    .describe("Per-item patches: [{id, status?, notes?, severity?}]. Use for mixed changes."),
   ids: z
     .array(z.string())
     .max(MAX_BATCH)
     .optional()
-    .describe("Apply the same status/notes to these finding IDs."),
+    .describe("Apply the same status/notes/severity to these finding IDs."),
   filter: filterShape
     .optional()
     .describe(
-      "Apply the same status/notes to all findings matching this filter. Stale findings " +
-        "are excluded unless the filter sets status explicitly.",
+      "Apply the same status/notes/severity to all findings matching this filter. Stale " +
+        "findings are excluded unless the filter sets status explicitly.",
     ),
   status: STATUS_ENUM.optional().describe("New status (for ids/filter modes)"),
   notes: z.string().max(MAX_NOTES).optional().describe("Notes (for ids/filter modes)"),
+  severity: SEVERITY_ENUM.optional().describe(
+    "New severity (for ids/filter modes). Updates the indexed severity column + the blob.",
+  ),
 });
 
 export const countSchema = z.object({ filter: filterShape.optional() });

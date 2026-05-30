@@ -318,10 +318,96 @@ describe("update_findings tool and compact get_findings", () => {
     expect(payload(res).error).toContain("exactly one");
   });
 
-  it("update_findings rejects ids/filter mode without status or notes", async () => {
+  it("update_findings rejects ids/filter mode without status, notes, or severity", async () => {
     const res = await tools.update_findings({ ids: ["x"] });
     expect(res.isError).toBe(true);
-    expect(payload(res).error).toContain("status or notes");
+    expect(payload(res).error).toContain("status, notes, or severity");
+  });
+
+  it("update_findings patches severity in both the indexed column and the blob", async () => {
+    // The dead-code finding starts at 'low'. Upgrade it via the ids mode.
+    const lows = await getFindings(dir, { severity: "low" });
+    expect(lows).toHaveLength(1);
+    const id = lows[0].id;
+
+    const res = await tools.update_findings({ ids: [id], severity: "critical" });
+    expect(payload(res).updated).toBe(1);
+
+    // Blob read (getFindingsByIds → rowToFinding parses the data blob).
+    expect((await oneFinding(dir, id)).severity).toBe("critical");
+    // Indexed-column read (getFindings severity filter hits the column).
+    const criticals = await getFindings(dir, { severity: "critical" });
+    expect(criticals.map((f) => f.id)).toContain(id);
+    expect(await getFindings(dir, { severity: "low" })).toHaveLength(0);
+  });
+
+  it("update_findings sets severity per-item alongside status", async () => {
+    const all = await getFindings(dir, {});
+    const res = await tools.update_findings({
+      updates: [{ id: all[0].id, status: "in-progress", severity: "high" }],
+    });
+    expect(payload(res).updated).toBe(1);
+    const f = await oneFinding(dir, all[0].id);
+    expect(f.status).toBe("in-progress");
+    expect(f.severity).toBe("high");
+  });
+
+  it("update_finding (singular) patches severity alone and rejects an empty patch", async () => {
+    const all = await getFindings(dir, {});
+    const ok = await tools.update_finding({ id: all[0].id, severity: "critical" });
+    expect(payload(ok).severity).toBe("critical");
+    expect((await oneFinding(dir, all[0].id)).severity).toBe("critical");
+
+    const bad = await tools.update_finding({ id: all[0].id });
+    expect(bad.isError).toBe(true);
+    expect(payload(bad).error).toContain("at least one");
+  });
+
+  it("preserves an assessor severity override across a re-scan, but lets the engine update non-overridden findings", async () => {
+    const all = await getFindings(dir, {});
+    const deadCode = all.find((f) => f.check === "dead-code"); // engine: low
+    const metric = all.find((f) => f.check === "metrics-long-file"); // engine: medium
+
+    // Assessor overrides the dead-code finding low -> critical.
+    await tools.update_findings({ ids: [deadCode.id], severity: "critical" });
+
+    // Re-scan the SAME findings (same check/file/line/description => same ids), but the
+    // engine now reports DIFFERENT severities for both.
+    await addFindings(
+      dir,
+      [
+        {
+          check: "dead-code",
+          severity: "high", // engine low -> high
+          category: "dead-code",
+          locations: [{ file: "src/utils.js", startLine: 10 }],
+          description: "Exported symbol unused",
+          confidence: 0.9,
+        },
+        {
+          check: "metrics-long-file",
+          severity: "low", // engine medium -> low
+          category: "metrics",
+          locations: [{ file: "src/main.js", startLine: 1 }],
+          description: "File exceeds line threshold",
+          confidence: 0.95,
+        },
+      ],
+      "scan-2",
+      dir,
+    );
+
+    const deadAfter = await oneFinding(dir, deadCode.id);
+    const metricAfter = await oneFinding(dir, metric.id);
+
+    // Override survived (engine's 'high' ignored) in BOTH the blob (read) ...
+    expect(deadAfter.severity).toBe("critical");
+    // ... and the indexed column (filter).
+    expect((await getFindings(dir, { severity: "critical" })).map((f) => f.id)).toContain(
+      deadCode.id,
+    );
+    // The non-overridden finding follows the engine's fresh value.
+    expect(metricAfter.severity).toBe("low");
   });
 
   it("update_findings rejects an oversized batch", async () => {

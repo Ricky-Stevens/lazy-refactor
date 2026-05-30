@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS findings (
   language   TEXT,
   notes      TEXT,
   data       TEXT NOT NULL,
+  -- 1 once severity has been patched via update_finding(s) (e.g. the assessor's
+  -- calibrated severity). upsertMany consults this so a re-scan does NOT clobber a
+  -- human/assessor override with the engine's fresh severity — same "preserve the
+  -- edit across re-scans" contract as status/notes. Engine inserts always leave it 0.
+  severity_overridden INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (run_id, id)
 );
 -- A plain (run_id) index stores entries as (run_id, rowid), so the default read
@@ -172,6 +177,22 @@ function applySchema(db) {
   const journalMode = db.query("PRAGMA journal_mode = WAL").get()?.journal_mode;
   if (journalMode !== "wal") db.exec("PRAGMA journal_mode = TRUNCATE");
   db.exec(SCHEMA);
+  // Bring a pre-existing findings table up to the current column set. SQLite has no
+  // ADD COLUMN IF NOT EXISTS, so probe table_info first. This mirrors the "indexes are
+  // created on open for existing DBs too" approach — idempotent schema-current-on-open,
+  // not a versioned migration. ADD COLUMN with a constant DEFAULT backfills existing
+  // rows to 0 (so they're treated as engine-assigned until explicitly overridden).
+  ensureColumn(db, "findings", "severity_overridden", "INTEGER NOT NULL DEFAULT 0");
+}
+
+// Idempotently add `column` (with the given type/constraint declaration) to `table` if
+// the table exists but lacks it. `table`/`column`/`decl` are internal constants, never
+// caller input, so the interpolation is injection-safe.
+function ensureColumn(db, table, column, decl) {
+  const cols = db.query(`PRAGMA table_info(${table})`).all();
+  if (cols.length && !cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 // A non-SQLite or structurally-broken file surfaces as one of these. Detected so a

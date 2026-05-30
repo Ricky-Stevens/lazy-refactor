@@ -298,19 +298,27 @@ export const emptySummary = EMPTY_SUMMARY;
 // Writes (no internal transactions — callers wrap multi-statement ops)
 // ---------------------------------------------------------------------------
 
-/** Upsert findings into a run, preserving any existing non-open status and notes. */
+/** Upsert findings into a run, preserving any existing non-open status, notes, and
+ *  assessor-overridden severity. */
 export function upsertMany(db, runId, findings) {
   // db.query caches the compiled statement by SQL string, so this single statement
   // is reused across calls (no per-call prepare/finalize churn in a long-lived proc).
+  // `severity_overridden` is intentionally NOT in the SET list: a fresh scan never sets
+  // it, and omitting it from DO UPDATE leaves the existing flag untouched (1 stays 1).
   const stmt = db.query(
     `${INSERT_COLS}
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(run_id, id) DO UPDATE SET
        check_name = excluded.check_name,
-       severity   = excluded.severity,
        category   = excluded.category,
        language   = excluded.language,
-       data       = excluded.data,
+       -- Preserve an assessor/human severity override (severity_overridden = 1) against
+       -- the engine's fresh value, in BOTH the column and the blob's $.severity (the
+       -- rest of the blob is taken fresh). Non-overridden findings follow the engine.
+       severity   = CASE WHEN findings.severity_overridden = 1 THEN findings.severity ELSE excluded.severity END,
+       data       = CASE WHEN findings.severity_overridden = 1
+                         THEN json_set(excluded.data, '$.severity', findings.severity)
+                         ELSE excluded.data END,
        -- Preserve USER-set statuses (fixed/ignored/false-positive/in-progress), but a
        -- reappearing finding that was system-marked 'stale' must revive to 'open'
        -- (excluded.status) — otherwise a re-introduced issue stays silently hidden.
@@ -348,24 +356,48 @@ export function applyPatches(db, runId, patches) {
   for (const p of patches) {
     const status = p.status ?? null;
     const notes = p.notes ?? null;
-    const key = `${status ?? " "}|${notes ?? " "}`;
+    const severity = p.severity ?? null;
+    const key = `${status ?? " "}|${notes ?? " "}|${severity ?? " "}`;
     const group = groups.get(key);
     if (group) group.ids.push(p.id);
-    else groups.set(key, { status, notes, ids: [p.id] });
+    else groups.set(key, { status, notes, severity, ids: [p.id] });
   }
-  for (const { status, notes, ids } of groups.values()) {
-    applyUniformPatch(db, runId, ids, { status, notes });
+  for (const { status, notes, severity, ids } of groups.values()) {
+    applyUniformPatch(db, runId, ids, { status, notes, severity });
   }
 }
 
-/** Apply ONE shared status/notes patch to many ids in a run — set-based, chunked. */
-export function applyUniformPatch(db, runId, ids, { status, notes }) {
+// Severity is denormalised: it lives in both the indexed `severity` column AND the
+// `data` blob (rowToFinding reads it back from the blob). A patch must write both, or
+// reads and indexed filters/ordering would disagree. The blob write is guarded by a
+// CASE so a null (absent) severity leaves the blob untouched — same COALESCE semantics
+// as the column. Patching severity also flips `severity_overridden` to 1 so a later
+// re-scan preserves this value instead of clobbering it with the engine's (see
+// upsertMany). The flag, column, and blob all move together or not at all.
+const SET_PATCH =
+  "status = COALESCE(?, status), notes = COALESCE(?, notes), " +
+  "severity = COALESCE(?, severity), " +
+  "severity_overridden = CASE WHEN ? IS NOT NULL THEN 1 ELSE severity_overridden END, " +
+  "data = CASE WHEN ? IS NOT NULL THEN json_set(data, '$.severity', ?) ELSE data END";
+const patchParams = ({ status, notes, severity }) => [
+  status ?? null,
+  notes ?? null,
+  severity ?? null, // severity column (COALESCE)
+  severity ?? null, // severity_overridden flag (CASE guard)
+  severity ?? null, // data blob (CASE guard)
+  severity ?? null, // json_set value
+];
+
+/** Apply ONE shared status/notes/severity patch to many ids in a run — set-based, chunked. */
+export function applyUniformPatch(db, runId, ids, patch) {
   for (let i = 0; i < ids.length; i += ID_CHUNK) {
     const chunk = ids.slice(i, i + ID_CHUNK);
     const placeholders = chunk.map(() => "?").join(",");
-    db.query(
-      `UPDATE findings SET status = COALESCE(?, status), notes = COALESCE(?, notes) WHERE run_id = ? AND id IN (${placeholders})`,
-    ).run(status ?? null, notes ?? null, runId, ...chunk);
+    db.query(`UPDATE findings SET ${SET_PATCH} WHERE run_id = ? AND id IN (${placeholders})`).run(
+      ...patchParams(patch),
+      runId,
+      ...chunk,
+    );
   }
 }
 
@@ -373,11 +405,10 @@ export function applyUniformPatch(db, runId, ids, { status, notes }) {
  * Apply ONE shared patch to every finding in a run matching a scalar filter, set-
  * based in a single UPDATE (no materialisation). Returns the number of rows matched.
  */
-export function applyPatchByScalar(db, runId, filter, { status, notes }) {
+export function applyPatchByScalar(db, runId, filter, patch) {
   const { where, params } = buildScalarWhere(runId, filter);
-  return db
-    .query(`UPDATE findings SET status = COALESCE(?, status), notes = COALESCE(?, notes) ${where}`)
-    .run(status ?? null, notes ?? null, ...params).changes;
+  return db.query(`UPDATE findings SET ${SET_PATCH} ${where}`).run(...patchParams(patch), ...params)
+    .changes;
 }
 
 /** Delete every finding in a run whose status is in `statuses`. Returns the count. */

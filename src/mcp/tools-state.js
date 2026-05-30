@@ -90,9 +90,12 @@ function makeFindingsByIdsHandler(projectPath) {
 }
 
 function makeUpdateFindingHandler(projectPath) {
-  return async ({ id, status, notes }) => {
+  return async ({ id, status, notes, severity }) => {
     try {
-      const updated = await updateFinding(projectPath, id, { status, notes });
+      if (status === undefined && notes === undefined && severity === undefined) {
+        return fail(new Error("Provide at least one of: status, notes, or severity"));
+      }
+      const updated = await updateFinding(projectPath, id, { status, notes, severity });
       if (!updated) return fail(new Error(`Finding '${id}' not found`));
       return ok(updated);
     } catch (err) {
@@ -102,7 +105,7 @@ function makeUpdateFindingHandler(projectPath) {
 }
 
 function makeUpdateFindingsHandler(projectPath) {
-  return async ({ updates, ids, status, notes, filter }) => {
+  return async ({ updates, ids, status, notes, severity, filter }) => {
     try {
       // Cross-field validation lives here, not in the schema: a .refine()-wrapped
       // schema normalizes to an empty advertised inputSchema in the MCP SDK,
@@ -111,8 +114,15 @@ function makeUpdateFindingsHandler(projectPath) {
       if (modes.length !== 1) {
         return fail(new Error("Provide exactly one of: updates, ids, or filter"));
       }
-      if (updates === undefined && status === undefined && notes === undefined) {
-        return fail(new Error("ids and filter modes require at least one of status or notes"));
+      if (
+        updates === undefined &&
+        status === undefined &&
+        notes === undefined &&
+        severity === undefined
+      ) {
+        return fail(
+          new Error("ids and filter modes require at least one of status, notes, or severity"),
+        );
       }
       if ((updates?.length ?? 0) > MAX_BATCH || (ids?.length ?? 0) > MAX_BATCH) {
         return fail(new Error(`Batch too large (max ${MAX_BATCH} items per call)`));
@@ -123,7 +133,9 @@ function makeUpdateFindingsHandler(projectPath) {
       ) {
         return fail(new Error(`Notes too long (max ${MAX_NOTES} characters)`));
       }
-      return ok(await updateFindings(projectPath, { updates, ids, status, notes, filter }));
+      return ok(
+        await updateFindings(projectPath, { updates, ids, status, notes, severity, filter }),
+      );
     } catch (err) {
       return fail(err);
     }
@@ -246,7 +258,8 @@ export function registerStateTools(server, projectPath) {
   server.registerTool(
     "update_finding",
     {
-      description: "Update the status (and optionally notes) on a single finding.",
+      description:
+        "Update the status, notes, and/or severity on a single finding. At least one is required.",
       inputSchema: updateFindingSchema,
     },
     makeUpdateFindingHandler(projectPath),
@@ -256,10 +269,11 @@ export function registerStateTools(server, projectPath) {
     "update_findings",
     {
       description:
-        "Batch-update finding statuses/notes in one call. Use this instead of repeated " +
+        "Batch-update finding status/notes/severity in one call. Use this instead of repeated " +
         "update_finding calls when triaging many findings. Provide exactly one of: " +
-        "`updates` (per-item patches), `ids` + status/notes, or `filter` + status/notes. " +
-        "Returns { updated, notFound, summary }.",
+        "`updates` (per-item patches), `ids` + status/notes/severity, or `filter` + " +
+        "status/notes/severity. Severity updates the indexed column used by report ordering " +
+        "and `/fix <severity>`. Returns { updated, notFound, summary }.",
       inputSchema: updateFindingsSchema,
     },
     makeUpdateFindingsHandler(projectPath),

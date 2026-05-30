@@ -23,7 +23,9 @@ Display the current state of code quality scans and fixes.
    - **Total findings**: Count of all stored findings
    - **By status**: Breakdown of open, fixed, ignored, in-progress, false-positive, and stale findings
    - **By severity**: Count at each level (critical, high, medium, low)
-   - **By category**: Count in each category (duplicates, dead-code, metrics, patterns, modularity, comments, over-engineering)
+   - **By category**: Count in each category, keyed by the stored `category` strings
+     (e.g. `duplication`, `dead-code`, `metrics`, `modularity`, `comment-quality`,
+     `complexity`, `consistency`, plus pattern-rule categories) — match `/report`'s naming
 
 3. **Show scan info** (from `get_active_run`):
    - Last scan ID
