@@ -10,6 +10,7 @@ import { scanDeadCode, scanUnusedDeps, scanUnusedImports } from "../engine/cross
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
 import { clearFileCache } from "../engine/files.js";
+import { configureGitignore } from "../engine/gitignore.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
@@ -69,6 +70,7 @@ export function boundFindings(items, { limit, offset, compact } = {}) {
 async function resolveScanContext(scanPath, projectPath) {
   const resolvedPath = await validateScanPath(scanPath);
   const config = await readConfig(projectPath);
+  configureGitignore(resolvedPath, config.respectGitignore !== false);
   clearFileCache();
   const detected = await detectLanguages(resolvedPath);
   return { resolvedPath, config, langs: detected.languages };
@@ -131,6 +133,7 @@ export function registerFocusedScanTools(server, projectPath) {
       try {
         const resolvedPath = await validateScanPath(scanPath);
         const config = await readConfig(projectPath);
+        configureGitignore(resolvedPath, config.respectGitignore !== false);
         clearFileCache();
         const findings = await scanDuplicates(resolvedPath, {
           minTokens,

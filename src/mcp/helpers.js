@@ -23,6 +23,9 @@ const DEFAULT_CONFIG = {
   exclude: ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],
   disabledChecks: [],
   languages: "auto",
+  // Respect .gitignore (via `git check-ignore`) so generated/vendored artifacts
+  // already ignored by the project aren't scanned. No-ops outside a git repo.
+  respectGitignore: true,
 };
 
 /** Language name -> rule array */
@@ -94,6 +97,9 @@ function normalizeConfig(merged) {
   ) {
     merged.thresholds = { ...DEFAULT_CONFIG.thresholds };
   }
+  // Only an explicit `false` disables gitignore respect; any other malformed
+  // value falls back to the safe default (on).
+  if (typeof merged.respectGitignore !== "boolean") merged.respectGitignore = true;
   return merged;
 }
 

@@ -16,6 +16,7 @@ import {
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
 import { clearFileCache, collectFiles, LANGUAGE_EXTENSIONS } from "../engine/files.js";
+import { configureGitignore } from "../engine/gitignore.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
@@ -241,6 +242,9 @@ async function performScan(projectPath, scanPath, options) {
   const focus = options.focus ?? DEFAULT_FOCUS;
   const exclude = [...config.exclude, ...(options.exclude ?? [])];
   const languages = await resolveLanguages(config, options.languages, resolvedPath);
+  // Applies to every collectFiles call under this scan root (the chokepoint
+  // reads it), so no need to thread a flag through each scanner.
+  configureGitignore(resolvedPath, config.respectGitignore !== false);
 
   clearFileCache();
   const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);

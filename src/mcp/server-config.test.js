@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readConfig } from "./helpers.js";
 import { detectLanguages } from "./server.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -59,6 +60,43 @@ describe("config helpers", () => {
     const raw = await readFile(join(dir, ".lazy-refactor.json"), "utf8");
     const parsed = JSON.parse(raw);
     expect(parsed.thresholds.maxFileLines).toBe(400);
+  });
+});
+
+// ─── respectGitignore config coercion ─────────────────────────────────────────
+
+describe("respectGitignore config", () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+  });
+
+  afterEach(async () => {
+    await cleanup(dir);
+  });
+
+  it("defaults to true when absent", async () => {
+    await writeFile(join(dir, ".lazy-refactor.json"), JSON.stringify({}), "utf8");
+    expect((await readConfig(dir)).respectGitignore).toBe(true);
+  });
+
+  it("honors an explicit false", async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ respectGitignore: false }),
+      "utf8",
+    );
+    expect((await readConfig(dir)).respectGitignore).toBe(false);
+  });
+
+  it('coerces a non-boolean (e.g. the string "false") back to the safe default true', async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ respectGitignore: "false" }),
+      "utf8",
+    );
+    expect((await readConfig(dir)).respectGitignore).toBe(true);
   });
 });
 

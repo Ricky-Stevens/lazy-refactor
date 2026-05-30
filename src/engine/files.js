@@ -1,6 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 
+import { gitignoredPaths } from "./gitignore.js";
+
 export const LANGUAGE_EXTENSIONS = {
   typescript: [".ts", ".tsx", ".js", ".jsx"],
   javascript: [".js", ".jsx"],
@@ -154,9 +156,9 @@ export function clearFileCache() {
 }
 
 export async function collectFiles(dir, options = {}) {
-  const { exclude = [], languages, skipped } = options;
+  const { exclude = [], languages, skipped, respectGitignore = true } = options;
 
-  const cacheKey = `${dir}|${JSON.stringify(exclude)}|${languages ? languages.join(",") : ""}`;
+  const cacheKey = `${dir}|${JSON.stringify(exclude)}|${languages ? languages.join(",") : ""}|${respectGitignore}`;
   const cached = _fileListCache.get(cacheKey);
   if (cached) return [...cached];
 
@@ -217,8 +219,19 @@ export async function collectFiles(dir, options = {}) {
   }
 
   await walk(dir);
-  _fileListCache.set(cacheKey, results);
-  return [...results];
+
+  // Drop anything git would ignore. SKIP_DIRS + the dotfile skip already prune
+  // node_modules/.next/build/etc., so the gitignored files reaching here live in
+  // non-dot dirs (coverage/report output, generated bundles) — a small set, so a
+  // single post-walk batch is cheaper than spawning git per directory level.
+  let final = results;
+  if (respectGitignore && results.length > 0) {
+    const ignored = gitignoredPaths(dir, results);
+    if (ignored.size > 0) final = results.filter((p) => !ignored.has(p));
+  }
+
+  _fileListCache.set(cacheKey, final);
+  return [...final];
 }
 
 const BATCH_SIZE = 64;
