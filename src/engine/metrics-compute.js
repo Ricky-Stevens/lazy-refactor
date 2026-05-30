@@ -184,6 +184,8 @@ export function computeFileMetrics(content, filePath) {
     maxNestingDepth,
     branchPointCount,
     commentToCodeRatio,
+    commentLines,
+    codeLines,
     exportCount,
     importCount,
     complexityScore,

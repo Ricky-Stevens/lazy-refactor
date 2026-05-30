@@ -20,7 +20,22 @@ const DEFAULT_CONFIG = {
     duplicateMinTokens: 100,
     duplicateSimilarity: 0.8,
   },
-  exclude: ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],
+  // Vendored/minified/generated artifacts are noise, not first-party source: a
+  // single vendored blob (e.g. public/tesseract/*.min.js) otherwise produces a
+  // false "critical" (eval) and a wall of empty-catch "high" findings. Test files
+  // are deliberately NOT excluded here — they're handled with raised thresholds in
+  // metrics.js so real smells (empty catch, eval) are still caught in tests.
+  exclude: [
+    "vendor/**",
+    "generated/**",
+    "*.generated.*",
+    "node_modules/**",
+    ".git/**",
+    "public/**",
+    "**/*.min.js",
+    "**/*.wasm.js",
+    "**/*.d.ts",
+  ],
   disabledChecks: [],
   languages: "auto",
   // Respect .gitignore (via `git check-ignore`) so generated/vendored artifacts

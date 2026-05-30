@@ -40,6 +40,11 @@ Display findings from the last scan, with optional filtering by severity and cat
    - Breakdown by severity
    - Breakdown by category
    - Percentage of findings at each confidence level (if applicable)
+   - **Keep the severity headline scope-honest.** Vendored/minified/generated files are
+     excluded by default, but if a user has re-included such a path (via config) and it is
+     inflating the critical/high counts, note that separately so the headline reflects
+     first-party code rather than a checked-in bundle. A single vendored blob can otherwise
+     manufacture a false "critical".
 
 4. **Provide context**: For each finding, include enough detail for the user to understand:
    - What the issue is

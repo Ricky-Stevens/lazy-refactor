@@ -23,6 +23,13 @@ Scan the codebase for code quality issues using deterministic analysis and targe
 
 > **Just run it.** A bare `/scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Drive the whole flow (scan → assess → report) to completion and report once. Don't stop to ask questions or check in mid-scan.
 
+> **Scope before you triage.** The engine already excludes vendored/minified/generated
+> artifacts and `public/**` by default (assessing those wastes triage budget on noise the
+> scan shouldn't have raised). If a scan still shows findings heavily concentrated in one
+> obviously-derived path (a checked-in bundle, a generated client, a fixtures tree), add an
+> `--exclude` for it and re-scan **before** fanning out assessors, rather than paying to
+> dismiss the noise. Order is scope → scan → triage.
+
 This command orchestrates two kinds of worker agent — the same command-orchestrates,
 workers-are-leaves pattern `/fix` uses. The **scanner** runs the fast deterministic
 scan; the **assessor** deep-triages the four subjective categories in parallel. The
@@ -57,11 +64,20 @@ workers never dispatch each other — *this command* fans them out.
    - If no valid files are found in the path, report that no scannable files were found
    - If the scanner or an assessor encounters an error, display the error details and advise the user. One assessor failing does not abort the others or the report.
 
-5. **Report output** — build this AFTER assessors finish, from `get_summary` /
+5. **Synthesize across categories** — before formatting the report, look for one
+   *code area* (file, directory, or layer) that shows up in **multiple** categories at
+   once: e.g. duplication + consistency + modularity all firing on the same route/query
+   layer is one architectural problem (un-DRYed boilerplate, a half-finished migration),
+   not three unrelated findings. Use `group_findings` (`by: "file"`) to spot files that
+   recur across categories. Surface each convergent cluster as a single high-value item
+   in the report — a per-category list buries the signal that matters most.
+
+6. **Report output** — build this AFTER assessors finish, from `get_summary` /
    `count_findings` / paged `get_findings` (small, SQL-side counts; never materialise the
    whole set). Display:
    - The new run ID (each scan creates a new run)
    - Count of findings by severity and category (post-assessment — dismissed findings now sit at `false-positive`)
+   - The cross-category clusters from step 5, called out first
    - Brief summary of top issues
    - Instructions for viewing detailed findings with `/lazy-refactor report`
 

@@ -214,10 +214,13 @@ describe("computeMetrics — comment quality findings", () => {
     expect(result.findings.find((f) => f.ruleId === "metrics-low-comments")).toBeUndefined();
   });
 
-  test("emits metrics-excessive-comments when commentToCodeRatio > 0.5", async () => {
+  test("emits metrics-excessive-comments for a genuinely over-commented file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "metrics-excessive-"));
-    // 3 comment lines, 1 code line → ratio = 3.0 > 0.5
-    const content = ["// comment 1", "// comment 2", "// comment 3", "const x = 1;"].join("\n");
+    // 24 code lines each preceded by a narration comment → ratio > 0.5 with real
+    // code volume (clears the codeLines >= 20 guard that filters header-only files).
+    const content = Array.from({ length: 24 }, (_, i) => `// set v${i}\nconst v${i} = ${i};`).join(
+      "\n",
+    );
     await writeFile(join(dir, "over-commented.js"), content);
 
     const result = await computeMetrics(dir, { languages: ["javascript"] });
@@ -228,6 +231,41 @@ describe("computeMetrics — comment quality findings", () => {
     expect(finding.severity).toBe("low");
     expect(finding.check).toBe("comment-quality");
     expect(finding.confidence).toBe(0.7);
+  });
+
+  test("does NOT emit metrics-excessive-comments for a tiny header-heavy file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-header-only-"));
+    // High ratio (3 comments : 1 code line) but almost no code — a license/JSDoc
+    // header or barrel, not over-commented code. Previously a false positive.
+    const content = ["// comment 1", "// comment 2", "// comment 3", "const x = 1;"].join("\n");
+    await writeFile(join(dir, "header-only.js"), content);
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-excessive-comments")).toBeUndefined();
+  });
+
+  test("does NOT emit metrics-excessive-comments for a test file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-test-comments-"));
+    const content = Array.from({ length: 24 }, (_, i) => `// case ${i}\nconst v${i} = ${i};`).join(
+      "\n",
+    );
+    await writeFile(join(dir, "thing.test.js"), content);
+
+    const result = await computeMetrics(dir, { languages: ["javascript"] });
+    expect(result.findings.find((f) => f.ruleId === "metrics-excessive-comments")).toBeUndefined();
+  });
+
+  test("raises the long-file threshold for test files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "metrics-long-test-"));
+    const body = Array.from({ length: 60 }, (_, i) => `const v${i} = ${i};`).join("\n");
+    // 60 lines: over the 50 threshold for source, under the doubled (100) test threshold.
+    await writeFile(join(dir, "feature.js"), body);
+    await writeFile(join(dir, "feature.test.js"), body);
+
+    const result = await computeMetrics(dir, { maxFileLines: 50, languages: ["javascript"] });
+    const longFile = result.findings.filter((f) => f.ruleId === "metrics-long-file");
+    expect(longFile.some((f) => f.file.includes("feature.js"))).toBe(true);
+    expect(longFile.some((f) => f.file.includes("feature.test.js"))).toBe(false);
   });
 
   test("does not emit metrics-excessive-comments when ratio is acceptable", async () => {

@@ -91,6 +91,10 @@ function checkExport(exp, file, language, ownContent, corpus, importsByLanguage,
   // register symbols implicitly without explicit imports (~60-100 FPs per Flask project).
   let confidence = baseConfidence;
   if (language === "python" && exp.decorated) confidence = 0.3;
+  // Type-only exports are hidden by `export * from` barrels (an accepted residual
+  // FP source) and have no runtime cost, so cap their confidence — they still
+  // surface but stay below the floor a bulk /fix run uses.
+  if (exp.isType) confidence = Math.min(confidence, 0.5);
 
   if (langImports.has(name)) return null;
   return { check: "dead-code", file, symbol: name, exportLine: line, confidence };

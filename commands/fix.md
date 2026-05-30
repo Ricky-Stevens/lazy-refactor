@@ -41,9 +41,17 @@ The only mid-run stop allowed is a genuine environment failure (e.g. the test co
 1. **Parse the target into a filter**:
    - If a finding ID, fetch it with `get_findings_by_ids` and validate it is open (bypass the
      fixable check — an explicit ID is a user override).
-   - If a severity level, the filter is `{ status: "open", fixable: true, severity: <level(s)> }`
+   - If a severity level, the filter is `{ status: "open", fixable: true, severity: <level(s)>, minConfidence: 0.8 }`
      (`high` ⇒ `["critical","high"]`).
-   - If `all`, the filter is `{ status: "open", fixable: true }`.
+   - If `all`, the filter is `{ status: "open", fixable: true, minConfidence: 0.8 }`.
+
+   **Bulk targets apply a confidence floor (`minConfidence: 0.8`).** Heuristic findings
+   carry a confidence score, and the low-confidence tail (e.g. type-only dead-code exports,
+   which the engine caps at 0.5 because `export * from` barrels hide them) is exactly where
+   false positives concentrate — auto-fixing it across a whole run is how a bulk pass does
+   damage. A specific finding ID is a user override and **bypasses** this floor (fix it
+   regardless of confidence). If a user wants the low-confidence tail swept too, they can
+   `/report --minConfidence=0` to review it and fix by ID.
 
    **Never bulk-load the store.** `fixable` is a first-class filter — combine it with
    `status`/`severity`/`category`/`file`/`check` so the query returns exactly the set you intend

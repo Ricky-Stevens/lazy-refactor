@@ -42,12 +42,25 @@ const rules = [
     severity: "low",
     category: "comment-quality",
     description:
-      'AI-generated step comments like "Step 1:", "// 1.", "# Step X:" that narrate code instead of explaining intent',
+      'AI-generated step comments like "Step 1:", "# Step X:" that narrate code instead of explaining intent',
     language: "common",
-    pattern: "(?:^|\\s)(?://|#|/\\*)\\s*(?:[Ss]tep\\s+\\d+|\\d+\\.\\s+\\w)",
+    // Only the explicit "Step N" form is matched. A previous bare "N." branch
+    // fired on ordinary numbered JSDoc, license headers, and test phase dividers
+    // (empirically ~92% false positives) — distinguishing AI narration from a
+    // legitimate numbered list is not reliably possible by regex, so it was dropped.
+    pattern: "(?:^|\\s)(?://|#|/\\*)\\s*[Ss]tep\\s+\\d+",
     antiPattern: null,
     filePattern: "**/*.{ts,tsx,js,jsx,go,py,cs,java}",
-    exclude: ["**/node_modules/**", "**/vendor/**"],
+    exclude: [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/*_test.go",
+      "**/__tests__/**",
+      "**/*.stories.*",
+      "**/*.d.ts",
+      "**/node_modules/**",
+      "**/vendor/**",
+    ],
     suggestion:
       "Replace procedural step comments with explanatory comments that describe WHY, not WHAT. Consider restructuring with well-named functions instead.",
     fixable: true,
@@ -69,6 +82,10 @@ const rules = [
       "**/*_test.go",
       "**/__tests__/**",
       "**/*.stories.*",
+      "**/*.d.ts",
+      "**/seed.*",
+      "**/seeds/**",
+      "**/fixtures/**",
       "**/*.json",
       "**/*.yaml",
       "**/*.yml",

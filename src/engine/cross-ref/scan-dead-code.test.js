@@ -166,3 +166,32 @@ describe("scanDeadCode — Go text-based dead code detection", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// scanDeadCode — type-only export confidence
+// ---------------------------------------------------------------------------
+
+describe("scanDeadCode — type-only export confidence", () => {
+  let dir;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "cross-ref-typeconf-"));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("caps confidence for an unused type-only export at 0.5", async () => {
+    await writeFile(
+      join(dir, "types.ts"),
+      "export type Unused = string;\nexport const used = 1;\n",
+    );
+    await writeFile(join(dir, "consumer.ts"), "import { used } from './types.ts';\nused;\n");
+
+    const findings = await scanDeadCode(dir, {});
+    const typeFinding = findings.find((f) => f.symbol === "Unused");
+    expect(typeFinding).toBeDefined();
+    expect(typeFinding.confidence).toBe(0.5);
+  });
+});

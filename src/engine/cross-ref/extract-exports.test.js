@@ -249,3 +249,30 @@ describe("extractExports — Python decorator tracking", () => {
     expect(fn.decorated).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// extractExports — type-only tagging (drives lower dead-code confidence)
+// ---------------------------------------------------------------------------
+
+describe("extractExports — type-only tagging", () => {
+  it("marks `export type` as isType", () => {
+    const result = extractExports("export type UserId = string;", "typescript");
+    const entry = result.find((e) => e.name === "UserId");
+    expect(entry).toBeDefined();
+    expect(entry.isType).toBe(true);
+  });
+
+  it("marks `export interface` as isType", () => {
+    const result = extractExports("export interface User { id: string }", "typescript");
+    const entry = result.find((e) => e.name === "User");
+    expect(entry).toBeDefined();
+    expect(entry.isType).toBe(true);
+  });
+
+  it("does NOT mark value exports as isType", () => {
+    const result = extractExports("export const MAX = 100;", "typescript");
+    const entry = result.find((e) => e.name === "MAX");
+    expect(entry).toBeDefined();
+    expect(entry.isType).toBeUndefined();
+  });
+});

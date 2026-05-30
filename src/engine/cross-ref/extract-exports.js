@@ -122,6 +122,13 @@ function extractPatternMatches(lines, langPatterns, language) {
       if (language === "python" && i > 0 && lines[i - 1].trim().startsWith("@")) {
         entry.decorated = true;
       }
+      // Type-only exports (export type / export interface) carry no runtime
+      // value and are disproportionately re-exported through `export * from`
+      // barrels — a documented dead-code false-positive source — so the scanner
+      // surfaces them at lower confidence (see scan-dead-code.checkExport).
+      if (language === "typescript" && /^export\s+(?:type|interface)\b/.test(line)) {
+        entry.isType = true;
+      }
       result.push(entry);
       break;
     }
