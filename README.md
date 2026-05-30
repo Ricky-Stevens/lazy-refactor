@@ -59,7 +59,9 @@ This is fine while you're moving fast. It's not fine when you need to maintain i
 
 **Scan** -- deterministic analysis with zero LLM cost. Pattern matching, metrics, Rabin-Karp duplicate detection with structural-entropy scoring, cross-reference analysis for dead code. Findings are scored by confidence and impact so you fix what matters first.
 
-**Fix** -- an AI fixer agent reads each finding, understands the context, makes the minimal extraction or cleanup, runs your test suite, and rolls back if anything breaks. For duplicate code, it classifies the refactoring strategy automatically:
+**Assess** -- some categories (modularity, comment quality, over-engineering, inconsistent patterns) are subjective — the engine can flag a candidate but can't decide if it's real. AI assessor agents fan out in parallel over those findings, confirm or dismiss each one, and set its final severity. Deterministic findings (duplicates, dead code, metrics, patterns) skip this step. This runs automatically inside `/scan` — you don't invoke it separately.
+
+**Fix** -- an AI fixer agent reads each finding, understands the context, makes the minimal extraction or cleanup, runs your test suite, and rolls back if anything breaks. Fixers fan out in parallel, one per file group, so a large run completes in waves rather than one finding at a time. For duplicate code, the fixer classifies the refactoring strategy automatically:
 
 | Category | What the AI found | What the fixer does |
 |---|---|---|
@@ -82,12 +84,24 @@ Every fix is verified by your existing test suite. No fix ships without passing 
 
 | Command | Description |
 |---|---|
-| `/lazy-refactor:scan [path]` | Scan the codebase for quality issues (creates a new run) |
-| `/lazy-refactor:fix <id\|all\|critical\|high>` | Fix findings (bulk targets filter by `fixable: true`) |
+| `/lazy-refactor:scan [path] [--focus=...] [--exclude=...]` | Scan the codebase for quality issues (creates a new run) |
+| `/lazy-refactor:fix <id\|all\|critical\|high> [--dry-run] [--yes]` | Fix findings (bulk targets filter by `fixable: true`) |
 | `/lazy-refactor:report [--severity=high] [--language=go]` | Show findings from the active run |
 | `/lazy-refactor:status` | Show current scan and fix state |
 | `/lazy-refactor:list [--all]` | List previous scan runs |
 | `/lazy-refactor:resume <id>` | Switch back to a previous run and keep fixing (no re-scan) |
+
+**Scan flags:** `--focus=duplicates,dead-code,metrics,patterns,inconsistent-patterns,over-engineering,outdated` limits the scan to specific categories; `--exclude=<glob>` skips paths (supports `*`, `**`, `?`, `{a,b}`). **Fix flags:** `--dry-run` reports what would change without touching files or running tests; `--yes` skips the confirmation prompt.
+
+### Agents
+
+Three Sonnet sub-agents do the AI work. You don't invoke them directly — the slash commands orchestrate them and fan out parallel instances for throughput.
+
+| Agent | Role | Dispatched by |
+|---|---|---|
+| **scanner** | Runs the deterministic engine scans, persists findings, returns per-category counts. Makes zero `Read` calls and does no triage — fast and complete. | `/scan` |
+| **assessor** | Deep-triages the four subjective categories (modularity, comment quality, over-engineering, inconsistent patterns) the engine can't decide alone — confirms or dismisses each finding and sets its final severity. Fanned out in parallel, one per category or file group. | `/scan` (after the scanner) |
+| **fixer** | Makes the minimal targeted change per finding, runs your tests, and rolls back on failure. Surgical by default, with a structural mode for god-file splits and over-engineering refactors. Fanned out per file group. | `/fix` |
 
 ### MCP Tools (25)
 
