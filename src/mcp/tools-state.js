@@ -1,36 +1,69 @@
 /**
- * State and config tool registrations for the lazy-refactor MCP server.
+ * Finding-state tool registrations for the lazy-refactor MCP server.
  *
- * Tools: get_findings, get_finding, update_finding, clear_findings,
- *        get_summary, get_config, update_config
+ * Tools: get_findings, get_findings_by_ids, count_findings, get_summary,
+ *        update_finding, update_findings, prune_findings, clear_findings
+ *
+ * Reads and writes are id-list based (pass a single-element array for one) — there
+ * is no separate single-id read tool. Config tools live in tools-config.js.
  */
 
-import * as z from "zod";
 import {
   clearFindings,
-  getFinding,
-  getFindings,
+  countFindings,
+  getFindingsByIds,
+  getFindingsPage,
   getSummary,
+  pruneFindings,
   updateFinding,
+  updateFindings,
 } from "../state/findings.js";
-import { deepMerge, fail, ok, readConfig, writeConfig } from "./helpers.js";
+import { fail, ok } from "./helpers.js";
+import {
+  byIdsSchema,
+  countSchema,
+  emptySchema,
+  findingsSchema,
+  MAX_BATCH,
+  MAX_NOTES,
+  pruneSchema,
+  updateFindingSchema,
+  updateFindingsSchema,
+} from "./tools-schemas.js";
+
+// Project a finding to a lightweight shape for large result sets — drops snippets
+// and other bulky fields, keeping just what's needed to triage and select work.
+function toCompact(f) {
+  const loc = f.locations?.[0] ?? {};
+  return {
+    id: f.id,
+    check: f.check,
+    severity: f.severity,
+    category: f.category,
+    status: f.status ?? "open",
+    description: f.description,
+    file: loc.file ?? null,
+    startLine: loc.startLine ?? null,
+    fixable: f.fixable,
+    confidence: f.confidence,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Handler factories — each returns an async handler closed over projectPath
 // ---------------------------------------------------------------------------
 
 function makeFindingsHandler(projectPath) {
-  return async ({ filter, limit, offset }) => {
+  return async ({ filter, limit, offset, compact }) => {
     try {
-      const filtered = await getFindings(projectPath, filter ?? {});
-      const total = filtered.length;
-      const effectiveOffset = offset ?? 0;
-      const effectiveLimit = limit ?? 200;
-      let results = filtered;
-      if (effectiveOffset) results = results.slice(effectiveOffset);
-      results = results.slice(0, effectiveLimit);
+      const effectiveOffset = Math.max(0, offset ?? 0);
+      const effectiveLimit = Math.max(0, limit ?? 200);
+      const { findings, total } = await getFindingsPage(projectPath, filter ?? {}, {
+        limit: effectiveLimit,
+        offset: effectiveOffset,
+      });
       return ok({
-        findings: results,
+        findings: compact ? findings.map(toCompact) : findings,
         total,
         offset: effectiveOffset,
         limit: effectiveLimit,
@@ -42,12 +75,11 @@ function makeFindingsHandler(projectPath) {
   };
 }
 
-function makeFindingHandler(projectPath) {
-  return async ({ id }) => {
+function makeFindingsByIdsHandler(projectPath) {
+  return async ({ ids, compact }) => {
     try {
-      const finding = await getFinding(projectPath, id);
-      if (!finding) return fail(new Error(`Finding '${id}' not found`));
-      return ok(finding);
+      const { findings, notFound } = await getFindingsByIds(projectPath, ids);
+      return ok({ findings: compact ? findings.map(toCompact) : findings, notFound });
     } catch (err) {
       return fail(err);
     }
@@ -60,6 +92,55 @@ function makeUpdateFindingHandler(projectPath) {
       const updated = await updateFinding(projectPath, id, { status, notes });
       if (!updated) return fail(new Error(`Finding '${id}' not found`));
       return ok(updated);
+    } catch (err) {
+      return fail(err);
+    }
+  };
+}
+
+function makeUpdateFindingsHandler(projectPath) {
+  return async ({ updates, ids, status, notes, filter }) => {
+    try {
+      // Cross-field validation lives here, not in the schema: a .refine()-wrapped
+      // schema normalizes to an empty advertised inputSchema in the MCP SDK,
+      // which would hide the parameters from the model.
+      const modes = [updates, ids, filter].filter((x) => x !== undefined);
+      if (modes.length !== 1) {
+        return fail(new Error("Provide exactly one of: updates, ids, or filter"));
+      }
+      if (updates === undefined && status === undefined && notes === undefined) {
+        return fail(new Error("ids and filter modes require at least one of status or notes"));
+      }
+      if ((updates?.length ?? 0) > MAX_BATCH || (ids?.length ?? 0) > MAX_BATCH) {
+        return fail(new Error(`Batch too large (max ${MAX_BATCH} items per call)`));
+      }
+      if (
+        (notes?.length ?? 0) > MAX_NOTES ||
+        (updates ?? []).some((u) => (u.notes?.length ?? 0) > MAX_NOTES)
+      ) {
+        return fail(new Error(`Notes too long (max ${MAX_NOTES} characters)`));
+      }
+      return ok(await updateFindings(projectPath, { updates, ids, status, notes, filter }));
+    } catch (err) {
+      return fail(err);
+    }
+  };
+}
+
+function makeCountHandler(projectPath) {
+  return async ({ filter }) => {
+    try {
+      return ok({ count: await countFindings(projectPath, filter ?? {}) });
+    } catch (err) {
+      return fail(err);
+    }
+  };
+}
+
+function makePruneHandler(projectPath) {
+  return async ({ status }) => {
+    try {
+      return ok(await pruneFindings(projectPath, status ? { statuses: status } : {}));
     } catch (err) {
       return fail(err);
     }
@@ -87,68 +168,12 @@ function makeSummaryHandler(projectPath) {
   };
 }
 
-function makeGetConfigHandler(projectPath) {
-  return async () => {
-    try {
-      return ok(await readConfig(projectPath));
-    } catch (err) {
-      return fail(err);
-    }
-  };
-}
-
-function makeUpdateConfigHandler(projectPath) {
-  return async ({ overrides }) => {
-    try {
-      const current = await readConfig(projectPath);
-      const updated = deepMerge(current, overrides);
-      await writeConfig(projectPath, updated);
-      return ok(updated);
-    } catch (err) {
-      return fail(err);
-    }
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const findingsSchema = z.object({
-  filter: z
-    .object({
-      severity: z.union([z.string(), z.array(z.string())]).optional(),
-      category: z.union([z.string(), z.array(z.string())]).optional(),
-      status: z.union([z.string(), z.array(z.string())]).optional(),
-      language: z.union([z.string(), z.array(z.string())]).optional(),
-    })
-    .optional(),
-  limit: z.number().optional().describe("Maximum findings to return (default 200)"),
-  offset: z.number().optional().describe("Skip this many findings (for pagination)"),
-});
-
-const idSchema = z.object({ id: z.string().describe("Finding ID") });
-
-const updateFindingSchema = z.object({
-  id: z.string().describe("Finding ID"),
-  status: z
-    .enum(["open", "fixed", "ignored", "in-progress", "false-positive", "stale"])
-    .describe("New status"),
-  notes: z.string().optional().describe("Optional notes"),
-});
-
-const overridesSchema = z.object({
-  overrides: z.record(z.unknown()).describe("Config fields to merge"),
-});
-
-const emptySchema = z.object({});
-
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
 /**
- * Register all 5 state tools and 2 config tools on the given McpServer instance.
+ * Register the 8 finding-state tools on the given McpServer instance.
  * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
  * @param {string} projectPath
  */
@@ -163,24 +188,23 @@ export function registerStateTools(server, projectPath) {
   );
 
   server.registerTool(
-    "get_finding",
-    { description: "Return a single finding by ID.", inputSchema: idSchema },
-    makeFindingHandler(projectPath),
-  );
-
-  server.registerTool(
-    "update_finding",
+    "get_findings_by_ids",
     {
-      description: "Update the status and/or notes on a finding.",
-      inputSchema: updateFindingSchema,
+      description:
+        "Fetch findings by an explicit id list (pass a single-element array for one). " +
+        "Status-agnostic. Returns { findings, notFound }.",
+      inputSchema: byIdsSchema,
     },
-    makeUpdateFindingHandler(projectPath),
+    makeFindingsByIdsHandler(projectPath),
   );
 
   server.registerTool(
-    "clear_findings",
-    { description: "Clear all persisted findings and reset scan state.", inputSchema: emptySchema },
-    makeClearFindingsHandler(projectPath),
+    "count_findings",
+    {
+      description: "Count findings matching a filter, without fetching them. Returns { count }.",
+      inputSchema: countSchema,
+    },
+    makeCountHandler(projectPath),
   );
 
   server.registerTool(
@@ -193,17 +217,41 @@ export function registerStateTools(server, projectPath) {
   );
 
   server.registerTool(
-    "get_config",
-    { description: "Read project config, merged with defaults.", inputSchema: emptySchema },
-    makeGetConfigHandler(projectPath),
+    "update_finding",
+    {
+      description: "Update the status and/or notes on a single finding.",
+      inputSchema: updateFindingSchema,
+    },
+    makeUpdateFindingHandler(projectPath),
   );
 
   server.registerTool(
-    "update_config",
+    "update_findings",
     {
-      description: "Deep-merge overrides into project config and write .lazy-refactor.json.",
-      inputSchema: overridesSchema,
+      description:
+        "Batch-update finding statuses/notes in one call. Use this instead of repeated " +
+        "update_finding calls when triaging many findings. Provide exactly one of: " +
+        "`updates` (per-item patches), `ids` + status/notes, or `filter` + status/notes. " +
+        "Returns { updated, notFound, summary }.",
+      inputSchema: updateFindingsSchema,
     },
-    makeUpdateConfigHandler(projectPath),
+    makeUpdateFindingsHandler(projectPath),
+  );
+
+  server.registerTool(
+    "prune_findings",
+    {
+      description:
+        "Permanently delete findings by status (default: 'stale'). Frees space from " +
+        "findings that accumulate across repeated focused scans. Returns { deleted }.",
+      inputSchema: pruneSchema,
+    },
+    makePruneHandler(projectPath),
+  );
+
+  server.registerTool(
+    "clear_findings",
+    { description: "Clear all persisted findings and reset scan state.", inputSchema: emptySchema },
+    makeClearFindingsHandler(projectPath),
   );
 }

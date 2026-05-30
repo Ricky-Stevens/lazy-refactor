@@ -66,33 +66,18 @@ describe("generateFindingId", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stale lock recovery
+// SQLite persistence / durability
 // ---------------------------------------------------------------------------
 
-describe("stale lock recovery", () => {
-  it("acquires lock after the previous holder process is gone (stale)", async () => {
-    const { writeFile, readFile, mkdir } = await import("node:fs/promises");
-    const stateDir = join(projectPath, ".lazy-refactor");
-    await mkdir(stateDir, { recursive: true });
-    const stalePid = 2_147_483_640;
-    await writeFile(join(stateDir, "findings.lock"), String(stalePid), "utf8");
-
-    await addFindings(
-      projectPath,
-      [makeFinding({ check: "stale-recovery" })],
-      "scan-stale",
-      "/repo",
-    );
-
-    expect((await loadFindings(projectPath)).findings).toHaveLength(1);
-
-    let lockStillThere = true;
-    try {
-      await readFile(join(stateDir, "findings.lock"), "utf8");
-    } catch (err) {
-      if (err.code === "ENOENT") lockStillThere = false;
-    }
-    expect(lockStillThere).toBe(false);
+describe("SQLite persistence", () => {
+  it("a separate connection sees committed writes (WAL durability)", async () => {
+    await addFindings(projectPath, [makeFinding({ check: "x" })], "scan-1", "/repo");
+    const { Database } = await import("bun:sqlite");
+    const { stateDbPath } = await import("./findings-db.js");
+    const db = new Database(stateDbPath(projectPath));
+    const count = db.query("SELECT COUNT(*) AS c FROM findings").get().c;
+    db.close();
+    expect(count).toBe(1);
   });
 });
 
@@ -114,6 +99,31 @@ describe("stale finding pruning", () => {
     const state = await loadFindings(projectPath);
     expect(state.findings.find((f) => f.id === "f-stale-test002").status).toBe("stale");
     expect(state.findings.find((f) => f.id === "f-stale-test001").status).toBe("open");
+  });
+
+  it("revives a stale finding to open when it reappears in a later scan", async () => {
+    const f1 = { ...makeFinding(), id: "f-revive-001", check: "check-a" };
+    const f2 = { ...makeFinding(), id: "f-revive-002", check: "check-b" };
+    await addFindings(projectPath, [f1, f2], "scan-1", "/repo");
+    await addFindings(projectPath, [f1], "scan-2", "/repo"); // f2 disappears -> stale
+    expect((await getFindings(projectPath, { status: "stale" })).map((f) => f.id)).toEqual([
+      "f-revive-002",
+    ]);
+    await addFindings(projectPath, [f1, f2], "scan-3", "/repo"); // f2 reappears -> open
+
+    const open = await getFindings(projectPath);
+    expect(open.map((f) => f.id).sort()).toEqual(["f-revive-001", "f-revive-002"]);
+    expect(await getFindings(projectPath, { status: "stale" })).toHaveLength(0);
+  });
+
+  it("does NOT revive a user-set status when a finding reappears", async () => {
+    const f1 = { ...makeFinding(), id: "f-revive-keep", check: "check-a" };
+    await addFindings(projectPath, [f1], "scan-1", "/repo");
+    await updateFinding(projectPath, "f-revive-keep", { status: "fixed" });
+    await addFindings(projectPath, [f1], "scan-2", "/repo"); // reappears, but user said fixed
+    expect((await getFindings(projectPath, { status: "fixed" })).map((f) => f.id)).toEqual([
+      "f-revive-keep",
+    ]);
   });
 
   it("does not mark non-open findings as stale", async () => {

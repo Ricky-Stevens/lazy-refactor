@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addFindings, getFinding, loadFindings, saveFindings, updateFinding } from "./findings.js";
+import {
+  addFindings,
+  computeSummary,
+  getFindings,
+  getFindingsByIds,
+  loadFindings,
+  saveFindings,
+  updateFinding,
+} from "./findings.js";
 
 function makeFinding(overrides = {}) {
   return {
@@ -20,6 +28,9 @@ function makeFinding(overrides = {}) {
     ...overrides,
   };
 }
+
+// Single-finding fetch over the id-list API (the only id-read path).
+const oneFinding = async (p, id) => (await getFindingsByIds(p, [id])).findings[0] ?? null;
 
 let projectPath;
 
@@ -53,35 +64,29 @@ describe("loadFindings", () => {
 // ---------------------------------------------------------------------------
 
 describe("saveFindings", () => {
-  it("creates the .lazy-refactor directory and writes JSON", async () => {
+  it("creates the .lazy-refactor directory and persists state", async () => {
     const state = { scanId: "s1", path: "/repo", findings: [], summary: { totalFindings: 0 } };
     await saveFindings(projectPath, state);
     expect((await loadFindings(projectPath)).scanId).toBe("s1");
   });
 
-  it("round-trips data faithfully", async () => {
+  it("round-trips findings faithfully with a derived summary", async () => {
     const f = { ...makeFinding(), id: "f-abc12345" };
-    const state = {
-      scanId: "scan-42",
-      path: "/my/project",
-      findings: [f],
-      summary: { totalFindings: 1, bySeverity: { medium: 1 }, byCategory: {} },
-    };
-    await saveFindings(projectPath, state);
-    expect(await loadFindings(projectPath)).toEqual(state);
+    await saveFindings(projectPath, { scanId: "scan-42", path: "/my/project", findings: [f] });
+    const loaded = await loadFindings(projectPath);
+    expect(loaded.scanId).toBe("scan-42");
+    expect(loaded.path).toBe("/my/project");
+    expect(loaded.findings).toEqual([f]);
+    // Summary is always derived from the findings, not trusted from input.
+    expect(loaded.summary).toEqual(computeSummary([f]));
   });
 
-  it("does not leave a tmp file behind after a successful write", async () => {
-    const { readdir } = await import("node:fs/promises");
-    await saveFindings(projectPath, {
-      scanId: "s1",
-      path: "/repo",
-      findings: [],
-      summary: { totalFindings: 0 },
-    });
-    const contents = await readdir(join(projectPath, ".lazy-refactor"));
-    expect(contents).toContain("findings.json");
-    expect(contents.filter((n) => n.includes(".tmp."))).toHaveLength(0);
+  it("writes a single SQLite state database, not a JSON file", async () => {
+    const { existsSync } = await import("node:fs");
+    const { stateDbPath } = await import("./findings-db.js");
+    await saveFindings(projectPath, { scanId: "s1", path: "/repo", findings: [] });
+    expect(existsSync(stateDbPath(projectPath))).toBe(true);
+    expect(existsSync(join(projectPath, ".lazy-refactor", "findings.json"))).toBe(false);
   });
 });
 
@@ -151,7 +156,7 @@ describe("updateFinding", () => {
     await addFindings(projectPath, [f], "scan-1", "/repo");
     const updated = await updateFinding(projectPath, "f-00000001", { status: "fixed" });
     expect(updated.status).toBe("fixed");
-    expect((await getFinding(projectPath, "f-00000001")).status).toBe("fixed");
+    expect((await oneFinding(projectPath, "f-00000001")).status).toBe("fixed");
   });
 
   it("adds notes to a finding", async () => {
@@ -165,5 +170,67 @@ describe("updateFinding", () => {
 
   it("returns null when finding does not exist", async () => {
     expect(await updateFinding(projectPath, "f-nonexistent", { status: "fixed" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadFindings cache
+// ---------------------------------------------------------------------------
+
+describe("loadFindings", () => {
+  it("returns fresh objects each call so mutations do not leak into the store", async () => {
+    await addFindings(projectPath, [{ ...makeFinding(), id: "f-x" }], "scan-1", "/repo");
+    const first = await loadFindings(projectPath);
+    first.findings[0].status = "MUTATED";
+    first.findings.push({ id: "junk" });
+    const second = await loadFindings(projectPath);
+    expect(second.findings).toHaveLength(1);
+    expect(second.findings[0].status).toBe("open");
+  });
+
+  it("immediately reflects committed writes", async () => {
+    await addFindings(projectPath, [{ ...makeFinding(), id: "f-x" }], "scan-1", "/repo");
+    await updateFinding(projectPath, "f-x", { status: "fixed", notes: "done" });
+    const reloaded = await loadFindings(projectPath);
+    expect(reloaded.findings[0].status).toBe("fixed");
+    expect(reloaded.findings[0].notes).toBe("done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFindings: file and check filters
+// ---------------------------------------------------------------------------
+
+describe("getFindings file/check filters", () => {
+  beforeEach(async () => {
+    await addFindings(
+      projectPath,
+      [
+        {
+          ...makeFinding({ check: "rule-x" }),
+          id: "f-x",
+          locations: [{ file: "src/a.js", startLine: 1 }],
+        },
+        {
+          ...makeFinding({ check: "rule-y" }),
+          id: "f-y",
+          locations: [{ file: "src/b.js", startLine: 2 }],
+        },
+      ],
+      "scan-1",
+      "/repo",
+    );
+  });
+
+  it("filters by file (matches any location)", async () => {
+    const results = await getFindings(projectPath, { file: "src/a.js" });
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("f-x");
+  });
+
+  it("filters by check", async () => {
+    const results = await getFindings(projectPath, { check: "rule-y" });
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("f-y");
   });
 });

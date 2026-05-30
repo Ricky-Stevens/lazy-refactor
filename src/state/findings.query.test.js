@@ -5,8 +5,8 @@ import { join } from "node:path";
 import {
   addFindings,
   clearFindings,
-  getFinding,
   getFindings,
+  getFindingsByIds,
   getSummary,
   loadFindings,
 } from "./findings.js";
@@ -123,20 +123,38 @@ describe("getFindings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getFinding
+// getFindingsByIds
 // ---------------------------------------------------------------------------
 
-describe("getFinding", () => {
-  it("returns single finding by id", async () => {
+describe("getFindingsByIds", () => {
+  it("returns findings for known ids", async () => {
     const f = { ...makeFinding(), id: "f-00000001" };
     await addFindings(projectPath, [f], "scan-1", "/repo");
-    const result = await getFinding(projectPath, "f-00000001");
-    expect(result).not.toBeNull();
-    expect(result.id).toBe("f-00000001");
+    const { findings, notFound } = await getFindingsByIds(projectPath, ["f-00000001"]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].id).toBe("f-00000001");
+    expect(notFound).toEqual([]);
   });
 
-  it("returns null when id is not found", async () => {
-    expect(await getFinding(projectPath, "f-missing")).toBeNull();
+  it("reports unknown ids in notFound", async () => {
+    const { findings, notFound } = await getFindingsByIds(projectPath, ["f-missing"]);
+    expect(findings).toEqual([]);
+    expect(notFound).toEqual(["f-missing"]);
+  });
+
+  it("fetches a batch, partitioning known from unknown", async () => {
+    await addFindings(
+      projectPath,
+      [
+        { ...makeFinding(), id: "f-1" },
+        { ...makeFinding(), id: "f-2" },
+      ],
+      "scan-1",
+      "/repo",
+    );
+    const { findings, notFound } = await getFindingsByIds(projectPath, ["f-1", "f-x", "f-2"]);
+    expect(findings.map((f) => f.id).sort()).toEqual(["f-1", "f-2"]);
+    expect(notFound).toEqual(["f-x"]);
   });
 });
 

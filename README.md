@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/Ricky-Stevens/lazy-refactor/graph/badge.svg)](https://codecov.io/gh/Ricky-Stevens/lazy-refactor)
 [![Semgrep](https://img.shields.io/badge/security-semgrep-blue)](https://github.com/Ricky-Stevens/lazy-refactor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.4.1-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
+[![version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
 
 Code with AI at full speed. Clean up after it automatically.
@@ -87,13 +87,17 @@ Every fix is verified by your existing test suite. No fix ships without passing 
 | `/lazy-refactor:report [--severity=high] [--language=go]` | Show findings from last scan |
 | `/lazy-refactor:status` | Show current scan and fix state |
 
-### MCP Tools (15)
+### MCP Tools (23)
 
-**Scan:** `run_scan`, `scan_duplicates`, `scan_dead_code`, `scan_metrics`, `scan_patterns`, `scan_inconsistent_patterns`, `scan_over_engineering`, `detect_language`
+**Scan:** `run_scan`, `resume_scan`, `scan_duplicates`, `scan_dead_code`, `scan_metrics`, `scan_patterns`, `scan_inconsistent_patterns`, `scan_over_engineering`, `detect_language`
 
-**State:** `get_findings`, `get_finding`, `update_finding`, `clear_findings`, `get_summary`
+**Runs:** `list_runs`, `set_active_run`, `set_run_status`, `delete_run`
+
+**State:** `get_findings`, `get_findings_by_ids`, `count_findings`, `get_summary`, `update_finding`, `update_findings`, `prune_findings`, `clear_findings`
 
 **Config:** `get_config`, `update_config`
+
+Each `run_scan` creates a new **run** (its own findings + triage state); previous runs are preserved. `list_runs` shows them (most recent first, active one marked; archived runs hidden). `set_active_run <id>` switches to a prior run without re-scanning, `resume_scan <id>` re-scans into one, and `delete_run <id>` removes it. The active run persists across sessions, so triage resumes where you left off.
 
 ## What it catches
 

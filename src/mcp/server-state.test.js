@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addFindings,
-  getFinding,
   getFindings,
+  getFindingsByIds,
   getSummary,
   updateFinding,
 } from "../state/findings.js";
@@ -22,6 +22,9 @@ async function makeTempDir() {
 async function cleanup(dir) {
   await rm(dir, { recursive: true, force: true });
 }
+
+// Single-finding fetch over the id-list API (the only id-read path).
+const oneFinding = async (dir, id) => (await getFindingsByIds(dir, [id])).findings[0] ?? null;
 
 // ─── State delegation: get_findings, get_finding, update_finding, get_summary ─
 
@@ -81,17 +84,18 @@ describe("state delegation", () => {
     expect(noneFixed).toHaveLength(0);
   });
 
-  it("getFinding returns a finding by id", async () => {
+  it("getFindingsByIds returns a finding by id", async () => {
     const all = await getFindings(dir, {});
     const id = all[0].id;
-    const found = await getFinding(dir, id);
+    const found = await oneFinding(dir, id);
     expect(found).not.toBeNull();
     expect(found.id).toBe(id);
   });
 
-  it("getFinding returns null for an unknown id", async () => {
-    const result = await getFinding(dir, "f-nonexistent");
-    expect(result).toBeNull();
+  it("getFindingsByIds reports an unknown id as notFound", async () => {
+    const { findings, notFound } = await getFindingsByIds(dir, ["f-nonexistent"]);
+    expect(findings).toEqual([]);
+    expect(notFound).toEqual(["f-nonexistent"]);
   });
 
   it("updateFinding changes status and adds notes", async () => {
@@ -103,7 +107,7 @@ describe("state delegation", () => {
     expect(updated.status).toBe("fixed");
     expect(updated.notes).toBe("Resolved in PR #42");
 
-    const refetched = await getFinding(dir, id);
+    const refetched = await oneFinding(dir, id);
     expect(refetched.status).toBe("fixed");
   });
 
@@ -227,6 +231,174 @@ describe("pagination awareness", () => {
     } finally {
       await cleanup(stateDir);
     }
+  });
+});
+
+// ─── update_findings batch tool + compact projection ─────────────────────────
+
+describe("update_findings tool and compact get_findings", () => {
+  let dir;
+  let tools;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+    await addFindings(
+      dir,
+      [
+        {
+          check: "dead-code",
+          severity: "low",
+          category: "dead-code",
+          locations: [{ file: "src/utils.js", startLine: 10 }],
+          description: "Exported symbol unused",
+          confidence: 0.9,
+          snippet: "x".repeat(500),
+        },
+        {
+          check: "metrics-long-file",
+          severity: "medium",
+          category: "metrics",
+          locations: [{ file: "src/main.js", startLine: 1 }],
+          description: "File exceeds line threshold",
+          confidence: 0.95,
+        },
+      ],
+      "scan-1",
+      dir,
+    );
+
+    // Capture the real tool handlers by passing a minimal fake server.
+    const { registerStateTools } = await import("./tools-state.js");
+    tools = {};
+    registerStateTools({ registerTool: (name, _def, handler) => (tools[name] = handler) }, dir);
+  });
+
+  afterEach(async () => {
+    await cleanup(dir);
+  });
+
+  const payload = (res) => JSON.parse(res.content[0].text);
+
+  it("get_findings compact mode drops bulky fields and flattens location", async () => {
+    const res = await tools.get_findings({ compact: true });
+    const { findings } = payload(res);
+    expect(findings).toHaveLength(2);
+    const f = findings[0];
+    expect(f).toHaveProperty("id");
+    expect(f).toHaveProperty("file");
+    expect(f).toHaveProperty("startLine");
+    expect(f).not.toHaveProperty("locations");
+    expect(f).not.toHaveProperty("snippet");
+  });
+
+  it("update_findings applies per-item updates and returns counts", async () => {
+    const all = await getFindings(dir, {});
+    const res = await tools.update_findings({
+      updates: [{ id: all[0].id, status: "fixed" }],
+    });
+    const out = payload(res);
+    expect(out.updated).toBe(1);
+    expect(out.notFound).toEqual([]);
+    expect((await oneFinding(dir, all[0].id)).status).toBe("fixed");
+  });
+
+  it("update_findings applies a filter-mode bulk change in one call", async () => {
+    const res = await tools.update_findings({
+      filter: { category: "metrics" },
+      status: "ignored",
+    });
+    expect(payload(res).updated).toBe(1);
+    const metrics = await getFindings(dir, { category: "metrics", status: "ignored" });
+    expect(metrics).toHaveLength(1);
+  });
+
+  it("update_findings rejects more than one selection mode", async () => {
+    const res = await tools.update_findings({ ids: ["x"], filter: {}, status: "fixed" });
+    expect(res.isError).toBe(true);
+    expect(payload(res).error).toContain("exactly one");
+  });
+
+  it("update_findings rejects ids/filter mode without status or notes", async () => {
+    const res = await tools.update_findings({ ids: ["x"] });
+    expect(res.isError).toBe(true);
+    expect(payload(res).error).toContain("status or notes");
+  });
+
+  it("update_findings rejects an oversized batch", async () => {
+    const big = Array.from({ length: 10001 }, (_, i) => ({ id: `f-${i}`, status: "fixed" }));
+    const res = await tools.update_findings({ updates: big });
+    expect(res.isError).toBe(true);
+    expect(payload(res).error).toContain("too large");
+  });
+
+  it("update_findings rejects over-long notes", async () => {
+    const all = await getFindings(dir, {});
+    const res = await tools.update_findings({
+      ids: [all[0].id],
+      status: "fixed",
+      notes: "x".repeat(8193),
+    });
+    expect(res.isError).toBe(true);
+    expect(payload(res).error).toContain("too long");
+  });
+
+  it("get_findings paginates via SQL limit/offset and preserves total", async () => {
+    const d2 = await makeTempDir();
+    try {
+      const five = Array.from({ length: 5 }, (_, i) => ({
+        check: "c",
+        severity: "low",
+        category: "metrics",
+        locations: [{ file: `p${i}.js`, startLine: 1 }],
+        description: `p${i}`,
+        confidence: 0.9,
+        id: `p-${i}`,
+      }));
+      await addFindings(d2, five, "scan-page", d2);
+      const t2 = {};
+      const { registerStateTools } = await import("./tools-state.js");
+      registerStateTools({ registerTool: (name, _def, handler) => (t2[name] = handler) }, d2);
+
+      const res = await t2.get_findings({ limit: 2, offset: 1 });
+      const p = payload(res);
+      expect(p.total).toBe(5);
+      expect(p.findings).toHaveLength(2);
+      expect(p.offset).toBe(1);
+      expect(p.limit).toBe(2);
+      expect(p.truncated).toBe(true);
+    } finally {
+      await cleanup(d2);
+    }
+  });
+
+  it("get_findings_by_ids fetches by id list (compact) and reports notFound", async () => {
+    const all = await getFindings(dir, {});
+    const res = await tools.get_findings_by_ids({ ids: [all[0].id, "f-missing"], compact: true });
+    const out = payload(res);
+    expect(out.findings).toHaveLength(1);
+    expect(out.findings[0]).toHaveProperty("file");
+    expect(out.findings[0]).not.toHaveProperty("locations");
+    expect(out.notFound).toEqual(["f-missing"]);
+  });
+
+  it("count_findings counts by filter without fetching", async () => {
+    const res = await tools.count_findings({ filter: { category: "metrics" } });
+    expect(payload(res).count).toBe(1);
+  });
+
+  it("prune_findings deletes stale findings only", async () => {
+    const all = await getFindings(dir, {});
+    await tools.update_findings({ ids: [all[0].id], status: "stale" });
+    const res = await tools.prune_findings({});
+    expect(payload(res).deleted).toBe(1);
+    // The other finding is untouched.
+    expect((await getFindings(dir, {})).length).toBe(1);
+  });
+
+  it("prune_findings rejects an invalid status", async () => {
+    const res = await tools.prune_findings({ status: ["bogus"] });
+    expect(res.isError).toBe(true);
+    expect(payload(res).error).toContain("Invalid status");
   });
 });
 

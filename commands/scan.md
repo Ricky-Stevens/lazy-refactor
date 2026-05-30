@@ -40,9 +40,23 @@ Scan the codebase for code quality issues using deterministic analysis and targe
    - If the scanner encounters an error, display the error details and advise the user
 
 5. **Report output**: Display a summary of findings including:
+   - The new run ID (each scan creates a new run)
    - Count of findings by severity and category
    - Brief summary of top issues
    - Instructions for viewing detailed findings with `/lazy-refactor report`
+
+## Runs
+
+Every scan creates a new **run** with its own findings and triage state (fixed/
+ignored statuses). Previous runs are **not** purged. Use the `run_scan` MCP tool
+(new run) or `resume_scan <id>` (re-scan an existing run, preserving your edits).
+`list_runs` shows all runs — most recent first, with the active one marked and a
+findings summary (archived runs hidden by default) — so you can recover the ID of a
+prior session and resume it. `set_active_run <id>` switches to a prior run WITHOUT
+re-scanning (cheap inspect/report); `delete_run <id>` permanently removes a run and
+its findings. The active run persists across sessions, so `/report` and `/fix`
+continue where you left off automatically. `set_run_status` marks a run
+`in-progress`/`complete`/`archived`.
 
 ## Examples
 

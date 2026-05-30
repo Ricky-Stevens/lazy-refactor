@@ -31,6 +31,7 @@ Apply fixes to code quality issues identified in scans, with test verification a
    - If a finding ID, validate it exists and is open (bypass fixable check — user override)
    - If a severity level, fetch all open findings at that level **with `fixable: true`**
    - If `all`, fetch all open findings **with `fixable: true`**
+   - When selecting more than a handful of findings, call `get_findings` with `compact: true` so the response stays small at scale. Use the `severity`/`category`/`file`/`check` filters to fetch exactly the set you need rather than paginating the whole store.
 
 2. **Confirm with the user** before making any changes:
    - Display a table of findings that will be fixed, showing: id, description, severity, file (first location)
@@ -40,11 +41,11 @@ Apply fixes to code quality issues identified in scans, with test verification a
    - If the `--yes` flag was passed, skip the prompt and proceed automatically
    - If the user does not confirm, abort with no changes made
 
-3. **Dispatch the fixer agent** for each finding:
-   - The fixer will read the finding details
-   - Understand the codebase context
-   - Make the minimal targeted change
-   - Run tests to verify the fix
+3. **Dispatch the fixer agent in batches, not one-per-finding:**
+   - **Group the selected findings by file** (first location's file). Treat each duplicate cluster as a single unit, as before.
+   - Dispatch **one fixer agent per file-group**, passing it the list of finding IDs in that group. Independent groups (different files) can be dispatched in parallel.
+   - This is the key throughput change: a 1,000-finding run becomes ~N file-group dispatches instead of 1,000 serial agent + tool-call round-trips.
+   - Each fixer reads the finding details, understands context, makes the minimal targeted change per finding, runs tests, and reports per-finding outcomes.
 
 4. **Dry-run mode** (when `--dry-run` is provided):
    - Analyze what would be fixed
@@ -56,7 +57,7 @@ Apply fixes to code quality issues identified in scans, with test verification a
 5. **Handle results**:
    - Track which findings were successfully fixed
    - Track which fixes failed and report why
-   - Update finding statuses based on results
+   - Persist statuses with **batched `update_findings` calls** (the `updates` mode with an array of `{id, status, notes?}`) — typically one call per file-group, or one call for the whole run. Never call `update_finding` once per finding. For bulk triage that doesn't need the fixer (e.g. mark an entire category `ignored`), use `update_findings` with `filter` + `status` in a single call.
    - Provide a summary report
 
 6. **Report output**:
@@ -68,7 +69,7 @@ Apply fixes to code quality issues identified in scans, with test verification a
 ## Examples
 
 ```
-/lazy-refactor fix FIND-001
+/lazy-refactor fix f-abc12345def67890
 /lazy-refactor fix critical
 /lazy-refactor fix all --dry-run
 /lazy-refactor fix high

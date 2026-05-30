@@ -22,7 +22,7 @@ Display findings from the last scan, with optional filtering by severity and cat
 
 ## Behavior
 
-1. **Fetch findings**: Call `get_findings` with the specified filters (severity, category, status).
+1. **Fetch findings**: Call `get_findings` with the specified filters (severity, category, status, language; `file` and `check` are also supported). This reports the **active run** — use `list_runs` to see all runs and `set_active_run <id>` to switch to a different one without re-scanning (or `resume_scan <id>` to re-scan into it). `delete_run <id>` removes a run you no longer need. For very large result sets, pass `compact: true` to get a lightweight projection (drops code snippets and bulky fields) and page with `limit`/`offset`.
 
 2. **Format results**: Organize findings by:
    - Primary grouping: Severity level (Critical, High, Medium, Low)

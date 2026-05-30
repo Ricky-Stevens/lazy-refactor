@@ -22,7 +22,8 @@ import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
 import { scanToctou } from "../engine/toctou.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
-import { addFindings, clearFindings, getSummary } from "../state/findings.js";
+import { addFindings, getSummary } from "../state/findings.js";
+import { createRun, getRun, setActiveRun } from "../state/runs.js";
 import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 import {
   mapCluster,
@@ -174,8 +175,57 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
   return allFindings;
 }
 
+const DEFAULT_FOCUS = [
+  "duplicates",
+  "dead-code",
+  "metrics",
+  "patterns",
+  "inconsistent-patterns",
+  "over-engineering",
+  "outdated",
+];
+
+const scanOptionsSchema = z
+  .object({
+    focus: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Subset: duplicates, dead-code, metrics, patterns, inconsistent-patterns, over-engineering, outdated",
+      ),
+    exclude: z.array(z.string()).optional().describe("Additional glob patterns to exclude"),
+    languages: z.array(z.string()).optional().describe("Override language detection"),
+  })
+  .optional();
+
 /**
- * Register the run_scan tool on the given McpServer instance.
+ * Scan `scanPath` into the ACTIVE run (merging/stale-marking, preserving prior
+ * triage edits), then return the scan result. The caller decides which run is
+ * active (run_scan creates a new one; resume_scan re-activates an existing one).
+ */
+async function performScan(projectPath, scanPath, options) {
+  const resolvedPath = await validateScanPath(scanPath);
+  const config = await readConfig(projectPath);
+  const focus = options.focus ?? DEFAULT_FOCUS;
+  const exclude = [...config.exclude, ...(options.exclude ?? [])];
+  const languages = await resolveLanguages(config, options.languages, resolvedPath);
+
+  clearFileCache();
+  const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);
+  const engineWarnings = allFindings.warnings;
+  const scored = scoreFindings(filterDisabledChecks(allFindings, config));
+
+  const scanId = `scan-${Date.now()}`;
+  // addFindings records scanId/path on the active run row and bumps updated_at.
+  await addFindings(projectPath, scored, scanId, resolvedPath);
+
+  const result = { scanId, totalFindings: scored.length, summary: await getSummary(projectPath) };
+  if (engineWarnings?.length > 0) result.warnings = engineWarnings;
+  return result;
+}
+
+/**
+ * Register the run_scan and resume_scan tools on the given McpServer instance.
  * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
  * @param {string} projectPath
  */
@@ -184,55 +234,43 @@ export function registerRunScan(server, projectPath) {
     "run_scan",
     {
       description:
-        "Run all (or a focused subset of) scan engines, score findings, and persist them.",
+        "Scan a directory into a NEW run (new ID), score findings, and persist them. " +
+        "Previous runs are preserved — nothing is purged. Returns { runId, scanId, ... }.",
       inputSchema: z.object({
         path: z.string().describe("Directory to scan"),
-        options: z
-          .object({
-            focus: z
-              .array(z.string())
-              .optional()
-              .describe(
-                "Subset: duplicates, dead-code, metrics, patterns, inconsistent-patterns, over-engineering, outdated",
-              ),
-            exclude: z.array(z.string()).optional().describe("Additional glob patterns to exclude"),
-            languages: z.array(z.string()).optional().describe("Override language detection"),
-          })
-          .optional(),
+        options: scanOptionsSchema,
       }),
     },
     async ({ path: scanPath, options = {} }) => {
       try {
-        const resolvedPath = await validateScanPath(scanPath);
-        const config = await readConfig(projectPath);
-        const isFullScan = !options.focus;
-        const focus = options.focus ?? [
-          "duplicates",
-          "dead-code",
-          "metrics",
-          "patterns",
-          "inconsistent-patterns",
-          "over-engineering",
-          "outdated",
-        ];
-        const exclude = [...config.exclude, ...(options.exclude ?? [])];
-        const languages = await resolveLanguages(config, options.languages, resolvedPath);
+        const run = createRun(projectPath, {});
+        return ok({ runId: run.id, ...(await performScan(projectPath, scanPath, options)) });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
 
-        if (isFullScan) await clearFindings(projectPath);
-        clearFileCache();
-
-        const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);
-        const engineWarnings = allFindings.warnings;
-        const filtered = filterDisabledChecks(allFindings, config);
-        const scored = scoreFindings(filtered);
-
-        const scanId = `scan-${Date.now()}`;
-        await addFindings(projectPath, scored, scanId, resolvedPath);
-
-        const summary = await getSummary(projectPath);
-        const result = { scanId, totalFindings: scored.length, summary };
-        if (engineWarnings?.length > 0) result.warnings = engineWarnings;
-        return ok(result);
+  server.registerTool(
+    "resume_scan",
+    {
+      description:
+        "Re-activate an existing run by ID and re-scan into it, merging results while " +
+        "preserving your fixed/ignored edits. Uses the run's stored path unless overridden.",
+      inputSchema: z.object({
+        id: z.string().describe("Run ID to resume (see list_runs)"),
+        path: z.string().optional().describe("Override the scan path (defaults to the run's path)"),
+        options: scanOptionsSchema,
+      }),
+    },
+    async ({ id, path, options = {} }) => {
+      try {
+        setActiveRun(projectPath, id);
+        const scanPath = path ?? getRun(projectPath, id)?.path;
+        if (!scanPath) {
+          return fail(new Error(`Run '${id}' has no stored scan path; provide 'path'.`));
+        }
+        return ok({ runId: id, ...(await performScan(projectPath, scanPath, options)) });
       } catch (err) {
         return fail(err);
       }

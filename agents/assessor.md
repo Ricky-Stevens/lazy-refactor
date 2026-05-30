@@ -47,7 +47,7 @@ When analyzing inconsistent patterns across the codebase:
 
 Use these MCP tools to interact with the system:
 - `get_findings` — Retrieve findings flagged for deep assessment
-- `get_finding` — Get details of a specific finding by ID
+- `get_findings_by_ids` — Get details of specific findings by ID (pass a single-element array for one)
 - `update_finding` — Update status and notes on a finding after assessment
 - Use the Read tool to examine source files at the locations specified in findings
 

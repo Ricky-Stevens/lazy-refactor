@@ -1,198 +1,294 @@
 /**
- * Public API for findings state.
+ * Public API for findings state (SQLite-backed via findings-store.js).
  *
- * State shape:
- * {
- *   scanId: string | null,
- *   path: string | null,
- *   findings: Finding[],
- *   summary: { totalFindings, bySeverity, byCategory, byStatus }
- * }
+ * All operations target the ACTIVE run (see readCtx/writeCtx below); run
+ * selection/creation lives in runs.js. loadFindings returns
+ * { scanId, path, findings, summary }; scan metadata lives on the run row.
  *
  * Finding statuses: 'open' | 'fixed' | 'ignored' | 'in-progress' | 'false-positive' | 'stale'
  *
  * Dedup invariant: addFindings merges by ID. User-set statuses and notes are
- * preserved across repeated scans. Findings absent from the latest scan are
- * marked stale if they were previously open.
+ * preserved across repeated scans. Findings absent from the latest scan are marked
+ * stale if they were previously open. Functions stay async even though bun:sqlite is
+ * synchronous, so existing callers/tests need no changes.
  */
 
-import { createHash } from "node:crypto";
-import { acquireLock, loadFindings, releaseLock, saveFindings } from "./findings-store.js";
+import {
+  computeSummary,
+  matchesFilter,
+  pickPatch,
+  stampFindings,
+  VALID_STATUSES,
+} from "./findings-helpers.js";
+import {
+  applyPatchByScalar,
+  applyPatches,
+  applyUniformPatch,
+  clearAll,
+  countScalar,
+  deleteByStatus,
+  existingIds,
+  getDb,
+  markStaleExcept,
+  reclaimSpace,
+  replaceAll,
+  selectAll,
+  selectByIds,
+  selectScalar,
+  summary,
+  upsertMany,
+} from "./findings-store.js";
+import {
+  clearRunScanMetaOn,
+  ensureActiveRunId,
+  getActiveRunId,
+  getRun,
+  touchRunOn,
+} from "./runs.js";
 
-export { loadFindings, saveFindings } from "./findings-store.js";
+// Re-export the pure helpers that form part of this module's public/test surface.
+export {
+  computeSummary,
+  generateFindingId,
+  matchesFilter,
+  VALID_STATUSES,
+} from "./findings-helpers.js";
 
-export const VALID_STATUSES = [
-  "open",
-  "fixed",
-  "ignored",
-  "in-progress",
-  "false-positive",
-  "stale",
-];
-
-// ---------------------------------------------------------------------------
-// Pure helpers
-// ---------------------------------------------------------------------------
-
-export function generateFindingId(finding) {
-  const location = finding.locations?.[0] ?? {};
-  const raw = `${finding.check ?? ""}:${location.file ?? ""}:${location.startLine ?? ""}:${finding.description ?? ""}`;
-  const digest = createHash("sha256").update(raw).digest("hex");
-  return `f-${digest.slice(0, 16)}`;
+// Reads resolve the active run WITHOUT creating one: on a never-scanned project
+// runId is null and every `WHERE run_id = ?` matches zero rows, so a pure read
+// returns empty and never mutates state. Writes create a default run if none exists.
+function readCtx(projectPath) {
+  return { db: getDb(projectPath), runId: getActiveRunId(projectPath) };
 }
-
-export function computeSummary(findings) {
-  const bySeverity = {};
-  const byCategory = {};
-  const byStatus = {};
-
-  // Stale findings are excluded from summary counts
-  const active = findings.filter((f) => (f.status ?? "open") !== "stale");
-
-  for (const f of active) {
-    if (f.severity) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
-    if (f.category) byCategory[f.category] = (byCategory[f.category] ?? 0) + 1;
-    const status = f.status ?? "open";
-    byStatus[status] = (byStatus[status] ?? 0) + 1;
-  }
-
-  return { totalFindings: active.length, bySeverity, byCategory, byStatus };
-}
-
-/** Assign IDs and default status to incoming raw findings. */
-function stampFindings(findings) {
-  return findings.map((f) => ({
-    status: "open",
-    ...f,
-    id: f.id ?? generateFindingId(f),
-  }));
-}
-
-/**
- * Merge stamped findings into an existing ID→finding map.
- * Preserves non-open status and notes set by the user.
- */
-function mergeById(existingById, stamped) {
-  for (const f of stamped) {
-    const existing = existingById.get(f.id);
-    if (!existing) {
-      existingById.set(f.id, f);
-      continue;
-    }
-    existingById.set(f.id, {
-      ...f,
-      status: existing.status !== "open" ? existing.status : f.status,
-      notes: existing.notes ?? f.notes,
-    });
-  }
-}
-
-/**
- * Mark previously-open findings that did not appear in this scan as stale.
- * Findings with user-set statuses (fixed, ignored, etc.) are left alone.
- */
-function markStale(existingById, newIds) {
-  for (const [id, f] of existingById) {
-    if (!newIds.has(id) && (f.status ?? "open") === "open") {
-      existingById.set(id, { ...f, status: "stale" });
-    }
-  }
+function writeCtx(projectPath) {
+  return { db: getDb(projectPath), runId: ensureActiveRunId(projectPath) };
 }
 
 // ---------------------------------------------------------------------------
-// Exported state mutators
+// Compatibility helpers: full-state load/replace (used by tools and tests)
+// ---------------------------------------------------------------------------
+
+export async function loadFindings(projectPath) {
+  const { db, runId } = readCtx(projectPath);
+  const findings = selectAll(db, runId);
+  const run = runId ? getRun(projectPath, runId) : null;
+  return {
+    scanId: run?.scanId ?? null,
+    path: run?.path ?? null,
+    findings,
+    summary: computeSummary(findings),
+  };
+}
+
+export async function saveFindings(projectPath, state) {
+  const { db, runId } = writeCtx(projectPath);
+  db.transaction(() => {
+    replaceAll(db, runId, state.findings ?? []);
+    touchRunOn(db, runId, { scanId: state.scanId, path: state.path });
+  }).immediate();
+}
+
+// ---------------------------------------------------------------------------
+// State mutators
 // ---------------------------------------------------------------------------
 
 export async function addFindings(projectPath, newFindings, scanId, scanPath) {
-  await acquireLock(projectPath);
-  try {
-    const state = await loadFindings(projectPath);
-    const stamped = stampFindings(newFindings);
-    const newIds = new Set(stamped.map((f) => f.id));
+  const { db, runId } = writeCtx(projectPath);
+  const stamped = stampFindings(newFindings);
+  const newIds = stamped.map((f) => f.id);
 
-    const existingById = new Map(state.findings.map((f) => [f.id, f]));
-    mergeById(existingById, stamped);
-    markStale(existingById, newIds);
-
-    state.findings = [...existingById.values()];
-    state.scanId = scanId ?? state.scanId;
-    state.path = scanPath ?? state.path;
-    state.summary = computeSummary(state.findings);
-
-    await saveFindings(projectPath, state);
-  } finally {
-    await releaseLock(projectPath);
-  }
+  db.transaction(() => {
+    upsertMany(db, runId, stamped);
+    markStaleExcept(db, runId, newIds);
+    // Record scan metadata on the run row and bump updated_at, so list_runs orders
+    // most-recently-scanned first. COALESCE leaves unset fields intact.
+    touchRunOn(db, runId, { scanId, path: scanPath });
+  }).immediate();
 }
 
 export async function clearFindings(projectPath) {
-  await acquireLock(projectPath);
-  try {
-    await saveFindings(projectPath, {
-      scanId: null,
-      path: null,
-      findings: [],
-      summary: { totalFindings: 0, bySeverity: {}, byCategory: {}, byStatus: {} },
-    });
-  } finally {
-    await releaseLock(projectPath);
-  }
+  const { db, runId } = readCtx(projectPath);
+  db.transaction(() => {
+    clearAll(db, runId);
+    clearRunScanMetaOn(db, runId);
+  }).immediate();
 }
 
-export async function updateFinding(projectPath, findingId, updates) {
-  await acquireLock(projectPath);
-  try {
-    const state = await loadFindings(projectPath);
-    const idx = state.findings.findIndex((f) => f.id === findingId);
-    if (idx === -1) return null;
-
-    state.findings[idx] = { ...state.findings[idx], ...updates };
-    state.summary = computeSummary(state.findings);
-
-    await saveFindings(projectPath, state);
-    return state.findings[idx];
-  } finally {
-    await releaseLock(projectPath);
-  }
+export async function updateFinding(projectPath, findingId, updates = {}) {
+  const { db, runId } = readCtx(projectPath);
+  const prev = selectByIds(db, runId, [findingId])[0];
+  if (!prev) return null;
+  applyPatches(db, runId, [{ id: findingId, status: updates.status, notes: updates.notes }]);
+  // Overlay the patch in JS (?? mirrors the COALESCE: undefined leaves prior value)
+  // instead of a second read.
+  const next = { ...prev, status: updates.status ?? prev.status };
+  const notes = updates.notes ?? prev.notes;
+  if (notes != null) next.notes = notes;
+  else delete next.notes;
+  return next;
 }
 
 /**
- * Return findings filtered by severity, category, status, and/or language.
- * Each filter value may be a string or array of strings.
- * Stale findings are excluded unless status filter explicitly includes 'stale'.
+ * Apply many status/notes changes in one transaction — the batch path for large
+ * refactors. Three mutually exclusive selection modes:
  *
- * @param {string} projectPath
- * @param {{ severity?: string|string[], category?: string|string[], status?: string|string[], language?: string|string[] }} [filter]
+ *   { updates: [{ id, status?, notes? }, ...] }   per-item patches (heterogeneous)
+ *   { ids: [...], status?, notes? }               one patch applied to listed ids
+ *   { filter: {...}, status?, notes? }            one patch applied to matching findings
+ *
+ * `ids` and `filter` modes apply the shared patch set-based (single/chunked
+ * UPDATE, no row materialisation). The presence check and the write share one
+ * IMMEDIATE transaction so `notFound` can't drift from what was applied. Returns
+ * counts, not findings.
+ *
+ * @returns {Promise<{ updated: number, notFound: string[], summary: object }>}
  */
-export async function getFindings(projectPath, filter = {}) {
-  const state = await loadFindings(projectPath);
+export async function updateFindings(projectPath, { updates, ids, status, notes, filter } = {}) {
+  const { db, runId } = readCtx(projectPath);
 
-  const match = (value, filterValue) => {
-    if (filterValue == null) return true;
-    const allowed = Array.isArray(filterValue) ? filterValue : [filterValue];
-    return allowed.includes(value);
-  };
+  // Per-item heterogeneous patches: validate presence + apply atomically.
+  if (Array.isArray(updates)) {
+    const patches = updates.map((u) => ({ id: u.id, ...pickPatch(u) }));
+    const { updated, notFound } = db
+      .transaction(() => {
+        const present = existingIds(
+          db,
+          runId,
+          patches.map((p) => p.id),
+        );
+        const missing = [];
+        const toApply = [];
+        for (const p of patches) {
+          if (!present.has(p.id)) missing.push(p.id);
+          else if (p.status !== undefined || p.notes !== undefined) toApply.push(p);
+        }
+        if (toApply.length) applyPatches(db, runId, toApply);
+        return { updated: toApply.length, notFound: missing };
+      })
+      .immediate();
+    return { updated, notFound, summary: summary(db, runId) };
+  }
 
-  const excludeStale = filter.status === undefined;
+  const patch = pickPatch({ status, notes });
 
-  return state.findings.filter((f) => {
-    const status = f.status ?? "open";
-    if (excludeStale && status === "stale") return false;
-    return (
-      match(f.severity, filter.severity) &&
-      match(f.category, filter.category) &&
-      match(status, filter.status) &&
-      match(f.language, filter.language)
-    );
-  });
+  // Filter mode: a single set-based UPDATE when no multi-location file dimension.
+  if (filter) {
+    if (filter.file == null) {
+      const updated = db
+        .transaction(() => applyPatchByScalar(db, runId, filter, patch))
+        .immediate();
+      return { updated, notFound: [], summary: summary(db, runId) };
+    }
+    const fileIds = (await getFindings(projectPath, filter)).map((f) => f.id);
+    if (fileIds.length) {
+      db.transaction(() => applyUniformPatch(db, runId, fileIds, patch)).immediate();
+    }
+    return { updated: fileIds.length, notFound: [], summary: summary(db, runId) };
+  }
+
+  // Ids mode: validate presence (for notFound) + apply atomically.
+  const idList = Array.isArray(ids) ? ids : [];
+  const { updated, notFound } = db
+    .transaction(() => {
+      const present = existingIds(db, runId, idList);
+      const missing = [];
+      const toApply = [];
+      const seen = new Set();
+      for (const id of idList) {
+        if (!present.has(id)) missing.push(id);
+        else if (!seen.has(id)) {
+          seen.add(id);
+          toApply.push(id);
+        }
+      }
+      if (toApply.length) applyUniformPatch(db, runId, toApply, patch);
+      return { updated: toApply.length, notFound: missing };
+    })
+    .immediate();
+  return { updated, notFound, summary: summary(db, runId) };
 }
 
-export async function getFinding(projectPath, findingId) {
-  const state = await loadFindings(projectPath);
-  return state.findings.find((f) => f.id === findingId) ?? null;
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+/**
+ * Return findings matching the given filter (see matchesFilter for semantics).
+ * Supported keys are severity, category, status, language, check, and file. SQL is
+ * authoritative for the scalar keys; matchesFilter runs only for the multi-location
+ * `file` dimension it alone can express.
+ *
+ * @param {string} projectPath
+ * @param {{ severity?, category?, status?, language?, check?, file? }} [filter]
+ */
+export async function getFindings(projectPath, filter = {}) {
+  const { db, runId } = readCtx(projectPath);
+  const rows = selectScalar(db, runId, filter);
+  return filter.file == null ? rows : rows.filter((f) => matchesFilter(f, filter));
+}
+
+/**
+ * Paginated query for the get_findings tool. Returns `{ findings, total }` where
+ * `total` is the full match count (for the `truncated` flag) and `findings` is the
+ * requested page. When no `file` filter is present, LIMIT/OFFSET and COUNT are
+ * pushed to SQL so only the page is parsed; the multi-location `file` dimension
+ * requires materialising the matches and slicing in JS.
+ *
+ * @param {string} projectPath
+ * @param {object} [filter]
+ * @param {{ limit?: number, offset?: number }} [page]
+ */
+export async function getFindingsPage(projectPath, filter = {}, { limit, offset } = {}) {
+  const { db, runId } = readCtx(projectPath);
+  const start = offset ?? 0;
+
+  if (filter.file != null) {
+    const all = selectScalar(db, runId, filter).filter((f) => matchesFilter(f, filter));
+    const findings = limit == null ? all.slice(start) : all.slice(start, start + limit);
+    return { findings, total: all.length };
+  }
+
+  return {
+    findings: selectScalar(db, runId, filter, { limit, offset: start }),
+    total: countScalar(db, runId, filter),
+  };
+}
+
+/**
+ * Fetch findings by an explicit id list — the single id-read entry point (pass
+ * `[id]` for one). Status-agnostic (returns findings regardless of status, since
+ * the caller chose these ids), mirroring the write-side ids mode. Returns
+ * `{ findings, notFound }`.
+ */
+export async function getFindingsByIds(projectPath, ids = []) {
+  const { db, runId } = readCtx(projectPath);
+  const findings = selectByIds(db, runId, ids);
+  const present = new Set(findings.map((f) => f.id));
+  return { findings, notFound: ids.filter((id) => !present.has(id)) };
 }
 
 export async function getSummary(projectPath) {
-  const state = await loadFindings(projectPath);
-  return computeSummary(state.findings);
+  const { db, runId } = readCtx(projectPath);
+  return summary(db, runId);
+}
+
+/** Count findings matching a filter (exact, including the multi-location file dimension). */
+export async function countFindings(projectPath, filter = {}) {
+  const { db, runId } = readCtx(projectPath);
+  if (filter.file == null) return countScalar(db, runId, filter);
+  return selectScalar(db, runId, filter).filter((f) => matchesFilter(f, filter)).length;
+}
+
+/**
+ * Permanently delete findings by status (defaults to 'stale' only). Statuses are
+ * validated against VALID_STATUSES so a typo can't silently no-op or over-delete.
+ * Returns `{ deleted }`.
+ */
+export async function pruneFindings(projectPath, { statuses = ["stale"] } = {}) {
+  const invalid = statuses.filter((s) => !VALID_STATUSES.includes(s));
+  if (invalid.length) throw new Error(`Invalid status(es): ${invalid.join(", ")}`);
+  const { db, runId } = readCtx(projectPath);
+  const deleted = db.transaction(() => deleteByStatus(db, runId, statuses)).immediate();
+  if (deleted > 0) reclaimSpace(db); // return freed pages to the OS (INCREMENTAL vacuum)
+  return { deleted };
 }

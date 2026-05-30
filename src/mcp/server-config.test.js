@@ -75,16 +75,23 @@ describe("server tool registration", () => {
     const { dirname } = await import("node:path");
 
     const dir = dirname(fileURLToPath(import.meta.url));
-    const [serverSrc, scanSrc, scanFocusedSrc, stateSrc] = await Promise.all([
+    const [serverSrc, scanSrc, scanFocusedSrc, stateSrc, configSrc, runsSrc] = await Promise.all([
       readFile(join(dir, "server.js"), "utf8"),
       readFile(join(dir, "tools-scan.js"), "utf8"),
       readFile(join(dir, "tools-scan-focused.js"), "utf8"),
       readFile(join(dir, "tools-state.js"), "utf8"),
+      readFile(join(dir, "tools-config.js"), "utf8"),
+      readFile(join(dir, "tools-runs.js"), "utf8"),
     ]);
-    const allSrc = serverSrc + scanSrc + scanFocusedSrc + stateSrc;
+    const allSrc = serverSrc + scanSrc + scanFocusedSrc + stateSrc + configSrc + runsSrc;
 
     const requiredTools = [
       "run_scan",
+      "resume_scan",
+      "list_runs",
+      "set_active_run",
+      "set_run_status",
+      "delete_run",
       "scan_duplicates",
       "scan_dead_code",
       "scan_metrics",
@@ -93,8 +100,11 @@ describe("server tool registration", () => {
       "scan_over_engineering",
       "detect_language",
       "get_findings",
-      "get_finding",
+      "get_findings_by_ids",
+      "count_findings",
       "update_finding",
+      "update_findings",
+      "prune_findings",
       "get_summary",
       "clear_findings",
       "get_config",
@@ -179,7 +189,7 @@ describe("new tool registrations", () => {
     expect(scanFocusedSrc).toContain('"scan_over_engineering"');
   });
 
-  it("server.js header comment reflects 15 tools", async () => {
+  it("server.js header comment reflects 23 tools", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
@@ -189,7 +199,7 @@ describe("new tool registrations", () => {
       "utf8",
     );
 
-    expect(serverSrc).toContain("Exposes 15 tools");
+    expect(serverSrc).toContain("Exposes 23 tools");
   });
 
   it("registers clear_findings", async () => {

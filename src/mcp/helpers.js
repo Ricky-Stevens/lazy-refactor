@@ -95,7 +95,25 @@ export function ok(data) {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
+// Redact the user's home directory and cwd from error text so a raw filesystem
+// or SQLite error (e.g. "...unable to open /home/<user>/...") doesn't leak the
+// local username/layout back to the MCP client. Intentional messages (e.g.
+// "Finding 'x' not found") contain none of these and pass through unchanged.
+function redactPaths(message) {
+  // Redact the longer path first: cwd is typically nested under HOME, so replacing
+  // HOME first would partially rewrite cwd and leave it uncollapsed.
+  const roots = [process.env.HOME, process.cwd()]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  let out = message;
+  for (const root of roots) out = out.split(root).join("~");
+  return out;
+}
+
 export function fail(err) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
+  return {
+    content: [{ type: "text", text: JSON.stringify({ error: redactPaths(message) }) }],
+    isError: true,
+  };
 }
