@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/Ricky-Stevens/lazy-refactor/graph/badge.svg)](https://codecov.io/gh/Ricky-Stevens/lazy-refactor)
 [![Semgrep](https://img.shields.io/badge/security-semgrep-blue)](https://github.com/Ricky-Stevens/lazy-refactor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.12.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
+[![version](https://img.shields.io/badge/version-0.14.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
 
 Code with AI at full speed. Clean up after it automatically.
@@ -103,7 +103,7 @@ Three Sonnet sub-agents do the AI work. You don't invoke them directly — the s
 | **assessor** | Deep-triages the four subjective categories (modularity, comment quality, over-engineering, inconsistent patterns) the engine can't decide alone — confirms or dismisses each finding and sets its final severity. Fanned out in parallel, one per category or file group. | `/scan` (after the scanner) |
 | **fixer** | Makes the minimal targeted change per finding, runs your tests, and rolls back on failure. Surgical by default, with a structural mode for god-file splits and over-engineering refactors. Fanned out per file group. | `/fix` |
 
-### MCP Tools (25)
+### MCP Tools (27)
 
 **Scan:** `run_scan`, `resume_scan`, `scan_duplicates`, `scan_dead_code`, `scan_metrics`, `scan_patterns`, `scan_inconsistent_patterns`, `scan_over_engineering`, `detect_language`
 
@@ -111,7 +111,7 @@ Three Sonnet sub-agents do the AI work. You don't invoke them directly — the s
 
 **State:** `get_findings`, `get_findings_by_ids`, `count_findings`, `group_findings`, `get_summary`, `update_finding`, `update_findings`, `prune_findings`, `clear_findings`
 
-**Config:** `get_config`, `update_config`
+**Config:** `get_config`, `update_config`, `get_ignore_list`, `update_ignore_list`
 
 Each `run_scan` creates a new **run** (its own findings + triage state); previous runs are preserved. `list_runs` shows them (most recent first, active one marked; archived runs hidden). `set_active_run <id>` switches to a prior run without re-scanning, `resume_scan <id>` re-scans into one, and `delete_run <id>` removes it. The active run persists across sessions, so triage resumes where you left off.
 
@@ -154,12 +154,17 @@ Create `.lazy-refactor.json` in the project root:
   },
   "exclude": ["vendor/**", "generated/**", "*.generated.*", "node_modules/**", ".git/**"],
   "disabledChecks": [],
+  "ignore": [],
   "languages": "auto",
   "respectGitignore": true
 }
 ```
 
 `respectGitignore` (default `true`) skips anything your project's `.gitignore` already excludes — coverage/report output, generated bundles, build artifacts — using `git check-ignore`, so it honors negation, nested `.gitignore` files, and `.git/info/exclude` exactly as git does. It no-ops outside a git repo. Set it to `false` to scan ignored files anyway.
+
+`ignore` is a **user-curated list** of project-relative files or directories to permanently skip — things like seed scripts, one-off test scripts, or fixtures you never want flagged again. It's kept separate from `exclude` (the default noise globs for vendored/minified artifacts) and from `.gitignore` so your curated list stays clean and reviewable. A plain path matches both a file and a directory's contents (`scripts/seed` skips the file *or* everything under the directory); glob entries (`scripts/*.seed.js`) are honored as-is. A bare name with no slash (`seed.ts`) follows gitignore semantics — it matches that name **anywhere in the tree** — so prefer a path-qualified entry (`scripts/seed.ts`) when you mean one specific file. Edit it by hand, or flag a file during triage with the `update_ignore_list` MCP tool (`{ "add": ["scripts/seed.ts"] }` / `{ "remove": [...] }`); `get_ignore_list` reads the current list.
+
+> ⚠️ An ignored path is exempt from **every** check, security scans included — a flaw in ignored code will not be reported. This is intentional (it's how you silence genuinely out-of-scope code), but to keep it from being silent, a scan reports `ignoredFiles` (the count of source files the ignore list removed) so the suppression is always visible. Reserve the ignore list for code you're certain is out of scope; use a per-finding `ignored` status for one-off dismissals.
 
 ## Supported languages
 

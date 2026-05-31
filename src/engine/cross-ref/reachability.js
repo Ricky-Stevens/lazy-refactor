@@ -18,9 +18,10 @@ import { dirname, resolve } from "node:path";
  * exports. Skipping (vs lowering confidence) is deliberate: a missed dead export
  * is harmless, a deleted live one breaks the build.
  *
- * Only relative specifiers (`./`, `../`) are resolved — path aliases (`@/…`) need
- * tsconfig `paths` we don't parse, so alias-only barrels remain a residual FP
- * source (documented, not silently wrong).
+ * Relative specifiers (`./`, `../`) are resolved directly; alias specifiers (`@/…`)
+ * are resolved via a tsconfig `paths` resolver when one is supplied (see
+ * tsconfig-paths.js). When no resolver is available, alias-only barrels remain a
+ * residual FP source (documented, not silently wrong) — never a wrong deletion.
  */
 
 const TS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
@@ -43,15 +44,28 @@ const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g;
  * @param {string} fromFile - absolute path of the file containing the specifier
  * @param {string} spec - the import/re-export specifier
  * @param {Set<string>} corpus - absolute paths of all scanned files
+ * @param {((spec: string) => string[]) | null} [aliasResolver] - tsconfig paths resolver
  * @returns {string|null} the resolved corpus path, or null if unresolved
  */
-function resolveSpec(fromFile, spec, corpus) {
-  if (!spec.startsWith(".")) return null;
-  const fromDir = dirname(fromFile);
-  // Try the specifier as written, then with a source extension stripped (nodenext).
-  const bases = [resolve(fromDir, spec)];
-  const stripped = spec.replace(SRC_EXT_RE, "");
-  if (stripped !== spec) bases.push(resolve(fromDir, stripped));
+function resolveSpec(fromFile, spec, corpus, aliasResolver) {
+  let bases;
+  if (spec.startsWith(".")) {
+    const fromDir = dirname(fromFile);
+    // Try the specifier as written, then with a source extension stripped (nodenext).
+    bases = [resolve(fromDir, spec)];
+    const stripped = spec.replace(SRC_EXT_RE, "");
+    if (stripped !== spec) bases.push(resolve(fromDir, stripped));
+  } else if (aliasResolver) {
+    // Non-relative: try tsconfig path aliases (@/… etc.). No resolver → unresolved.
+    bases = aliasResolver(spec);
+    if (bases.length === 0) return null;
+    for (const b of [...bases]) {
+      const stripped = b.replace(SRC_EXT_RE, "");
+      if (stripped !== b) bases.push(stripped);
+    }
+  } else {
+    return null;
+  }
 
   for (const base of bases) {
     if (corpus.has(base)) return base;
@@ -68,9 +82,10 @@ function resolveSpec(fromFile, spec, corpus) {
  * Compute the set of files whose exports are reachable via an `export *` barrel
  * or a dynamic `import()` and must therefore be exempt from dead-code flagging.
  * @param {Array<{file: string, language: string, content: string}>} fileData
+ * @param {((spec: string) => string[]) | null} [aliasResolver] - tsconfig paths resolver
  * @returns {Set<string>} absolute paths of barrel/dynamic-reachable files
  */
-export function computeReachableFiles(fileData) {
+export function computeReachableFiles(fileData, aliasResolver = null) {
   const corpus = new Set(fileData.map((fd) => fd.file));
   const reachable = new Set();
 
@@ -81,7 +96,7 @@ export function computeReachableFiles(fileData) {
     for (const re of [STAR_REEXPORT_RE, DYNAMIC_IMPORT_RE]) {
       re.lastIndex = 0;
       for (let m = re.exec(content); m; m = re.exec(content)) {
-        const target = resolveSpec(file, m[1], corpus);
+        const target = resolveSpec(file, m[1], corpus, aliasResolver);
         if (target) reachable.add(target);
       }
     }

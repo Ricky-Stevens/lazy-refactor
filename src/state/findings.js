@@ -113,6 +113,51 @@ export async function addFindings(projectPath, newFindings, scanId, scanPath) {
   }).immediate();
 }
 
+// User dismissals worth carrying across runs. `fixed`/`in-progress` are run-
+// specific (and a reappearing `fixed` finding is a regression signal, not something
+// to auto-silence), so only the "this is not a real problem" verdicts carry.
+const CARRYABLE_STATUSES = ["false-positive", "ignored"];
+
+/**
+ * Carry user dismissals (false-positive / ignored) from `fromRunId` onto the ACTIVE
+ * run, matched by stable finding id. Finding ids are content-based and line-
+ * independent, so an unchanged finding keeps its id across runs — this is what lets
+ * a verdict reached in a prior `/scan` survive a fresh one instead of resurfacing as
+ * noise (the "rely on persisted state, not a memory" fix). Only ids that actually
+ * reappear in the new run are touched. Returns a per-status count of what was
+ * applied (so the scan can SURFACE it, never hide it), or null if nothing carried.
+ * @returns {Promise<{ applied: number, byStatus: Record<string, number>, fromRunId: string } | null>}
+ */
+export async function carryForwardDismissals(projectPath, fromRunId) {
+  if (!fromRunId) return null;
+  const { db, runId } = writeCtx(projectPath);
+  if (!runId || runId === fromRunId) return null;
+
+  const prior = selectScalar(db, fromRunId, { status: CARRYABLE_STATUSES });
+  if (prior.length === 0) return null;
+
+  const byStatus = {};
+  let applied = 0;
+  db.transaction(() => {
+    const idsByStatus = new Map();
+    for (const f of prior) {
+      if (!idsByStatus.has(f.status)) idsByStatus.set(f.status, []);
+      idsByStatus.get(f.status).push(f.id);
+    }
+    for (const [status, ids] of idsByStatus) {
+      const present = existingIds(db, runId, ids);
+      const toApply = ids.filter((id) => present.has(id));
+      if (toApply.length) {
+        applyUniformPatch(db, runId, toApply, { status });
+        byStatus[status] = toApply.length;
+        applied += toApply.length;
+      }
+    }
+  }).immediate();
+
+  return applied > 0 ? { applied, byStatus, fromRunId } : null;
+}
+
 export async function clearFindings(projectPath) {
   const { db, runId } = readCtx(projectPath);
   db.transaction(() => {

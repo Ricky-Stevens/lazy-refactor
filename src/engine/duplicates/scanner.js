@@ -16,7 +16,8 @@ import {
   computeTokenDiversity,
   scoreConfidence,
 } from "./scoring.js";
-import { normalizeTokens, tokenizeWithPositions } from "./tokenizer.js";
+import { NUMBER_RE, normalizeTokens, STRING_SENTINEL, tokenizeWithPositions } from "./tokenizer.js";
+import { scanStringLiteral } from "./tokenizer-helpers.js";
 
 const MAX_SNIPPET_LINES = 30;
 
@@ -53,6 +54,49 @@ function extendMatch(normA, normB, startA, startB, minTokens) {
   return extent;
 }
 
+// Recover a literal's actual source text. Numbers/identifiers keep their value in
+// the raw token; strings are tokenized to a content-free sentinel (so near-dup
+// strings hash equal), so the source slice is re-read from the original position.
+function literalSource(data, idx) {
+  const raw = data.raw[idx];
+  if (raw !== STRING_SENTINEL) return raw;
+  const { pos } = data.tokenPositions[idx];
+  const end = scanStringLiteral(data.content, pos, data.content.length, data.content[pos]);
+  return data.content.slice(pos, end);
+}
+
+/**
+ * Detect positions where the two matched windows share token STRUCTURE but differ
+ * in a string or number LITERAL — the silent-behaviour-change trap. The tokenizer
+ * collapses every string to one sentinel, so two blocks differing only in string
+ * content score similarity 1.0 and look safely mergeable; a fixer that dedups them
+ * by collapsing to one value changes behaviour (the error-message and Tailwind-tint
+ * regressions). Reporting these lets the fixer parameterise the differing literals
+ * instead of picking one. Identifier-only divergence is the ordinary extract-and-
+ * rename case and is intentionally NOT counted here.
+ * @returns {{ count: number, samples: Array<{a: string, b: string}> }}
+ */
+function computeLiteralDivergence(dataA, dataB, startA, startB, extent) {
+  let count = 0;
+  const samples = [];
+  for (let i = 0; i < extent; i++) {
+    const ia = startA + i;
+    const ib = startB + i;
+    const ra = dataA.raw[ia];
+    const rb = dataB.raw[ib];
+    const bothStr = ra === STRING_SENTINEL && rb === STRING_SENTINEL;
+    const bothNum = NUMBER_RE.test(ra) && NUMBER_RE.test(rb);
+    if (!bothStr && !bothNum) continue;
+    const va = literalSource(dataA, ia);
+    const vb = literalSource(dataB, ib);
+    if (va !== vb) {
+      count++;
+      if (samples.length < 3) samples.push({ a: va, b: vb });
+    }
+  }
+  return { count, samples };
+}
+
 function buildFinding(dataA, dataB, startA, startB, extent, sim) {
   const extendedEndA = startA + extent - 1;
   const extendedEndB = startB + extent - 1;
@@ -72,6 +116,14 @@ function buildFinding(dataA, dataB, startA, startB, extent, sim) {
 
   const category = classifyRefactoring(dataA.normalised, startA, extent, structuralRatio);
 
+  const { count: divergentLiterals, samples: divergenceSamples } = computeLiteralDivergence(
+    dataA,
+    dataB,
+    startA,
+    startB,
+    extent,
+  );
+
   return {
     check: "duplicate",
     fileA: dataA.file,
@@ -86,6 +138,8 @@ function buildFinding(dataA, dataB, startA, startB, extent, sim) {
     tokenDiversity,
     confidence: 0,
     category,
+    divergentLiterals,
+    divergenceSamples,
     snippet: extractSnippet(dataA.content, startLineA, endLineA),
   };
 }
@@ -163,6 +217,8 @@ function enrichClusters(clusters, pairFindings) {
     cluster.filesAffected = filesAffected;
     cluster.impact = Math.round(filesAffected * cluster.avgSimilarity * totalDuplicatedLines) / 100;
     cluster.category = repFinding?.category ?? "extract-function";
+    cluster.divergentLiterals = repFinding?.divergentLiterals ?? 0;
+    cluster.divergenceSamples = repFinding?.divergenceSamples ?? [];
     cluster.snippet = repFinding?.snippet ?? null;
   }
   clusters.sort((a, b) => (b.impact ?? 0) - (a.impact ?? 0));

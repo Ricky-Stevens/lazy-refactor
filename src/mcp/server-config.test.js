@@ -9,8 +9,24 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readConfig } from "./helpers.js";
+import { effectiveExclude, readConfig, writeConfig } from "./helpers.js";
 import { detectLanguages } from "./server.js";
+import { registerConfigTools } from "./tools-config.js";
+
+// Parse the JSON payload an MCP tool handler returns in its content envelope.
+function parseResult(res) {
+  return JSON.parse(res.content[0].text);
+}
+
+// Register the config tools on a fake server and return a name->handler map.
+function configHandlers(projectPath) {
+  const handlers = {};
+  registerConfigTools(
+    { registerTool: (name, _def, handler) => (handlers[name] = handler) },
+    projectPath,
+  );
+  return handlers;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -97,6 +113,110 @@ describe("respectGitignore config", () => {
       "utf8",
     );
     expect((await readConfig(dir)).respectGitignore).toBe(true);
+  });
+});
+
+// ─── ignore list config + tools ───────────────────────────────────────────────
+
+describe("ignore list", () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+  });
+
+  afterEach(async () => {
+    await cleanup(dir);
+  });
+
+  it("defaults to an empty array when absent", async () => {
+    await writeFile(join(dir, ".lazy-refactor.json"), JSON.stringify({}), "utf8");
+    expect((await readConfig(dir)).ignore).toEqual([]);
+  });
+
+  it("coerces a malformed (non-array) ignore back to the safe default", async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ ignore: "scripts/seed" }),
+      "utf8",
+    );
+    // A string is wrapped to a single-element array by normalizeConfig.
+    expect((await readConfig(dir)).ignore).toEqual(["scripts/seed"]);
+
+    await writeFile(join(dir, ".lazy-refactor.json"), JSON.stringify({ ignore: 5 }), "utf8");
+    expect((await readConfig(dir)).ignore).toEqual([]);
+  });
+
+  it("effectiveExclude folds the expanded ignore list in after config.exclude", () => {
+    const config = { exclude: ["vendor/**"], ignore: ["scripts/seed"] };
+    expect(effectiveExclude(config, ["extra/**"])).toEqual([
+      "vendor/**",
+      "scripts/seed",
+      "scripts/seed/**",
+      "extra/**",
+    ]);
+  });
+
+  it("get_ignore_list returns the configured entries", async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ ignore: ["scripts/seed"] }),
+      "utf8",
+    );
+    const { get_ignore_list } = configHandlers(dir);
+    expect(parseResult(await get_ignore_list({})).ignore).toEqual(["scripts/seed"]);
+  });
+
+  it("update_ignore_list adds, normalizes, and de-duplicates entries", async () => {
+    const { update_ignore_list, get_ignore_list } = configHandlers(dir);
+    const res = parseResult(
+      await update_ignore_list({ add: ["./scripts/seed/", "scripts/seed", "test/fixtures"] }),
+    );
+    expect(res.ignore).toEqual(["scripts/seed", "test/fixtures"]);
+    // Persisted to disk.
+    expect(parseResult(await get_ignore_list({})).ignore).toEqual([
+      "scripts/seed",
+      "test/fixtures",
+    ]);
+  });
+
+  it("update_ignore_list removes entries and preserves remaining order", async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ ignore: ["a", "b", "c"] }),
+      "utf8",
+    );
+    const { update_ignore_list } = configHandlers(dir);
+    const res = parseResult(await update_ignore_list({ remove: ["b"] }));
+    expect(res.ignore).toEqual(["a", "c"]);
+  });
+
+  it("update_ignore_list errors when neither add nor remove is given", async () => {
+    const { update_ignore_list } = configHandlers(dir);
+    const res = await update_ignore_list({});
+    expect(res.isError).toBe(true);
+  });
+
+  it("update_ignore_list leaves the rest of the config untouched", async () => {
+    await writeFile(
+      join(dir, ".lazy-refactor.json"),
+      JSON.stringify({ disabledChecks: ["eval-usage"] }),
+      "utf8",
+    );
+    const { update_ignore_list } = configHandlers(dir);
+    await update_ignore_list({ add: ["scripts/seed"] });
+    const config = await readConfig(dir);
+    expect(config.ignore).toEqual(["scripts/seed"]);
+    expect(config.disabledChecks).toEqual(["eval-usage"]);
+  });
+
+  it("writeConfig is atomic — leaves no .tmp file behind on success", async () => {
+    const { readdir } = await import("node:fs/promises");
+    await writeConfig(dir, { ...(await readConfig(dir)), ignore: ["scripts/seed"] });
+    const entries = await readdir(dir);
+    expect(entries).toContain(".lazy-refactor.json");
+    expect(entries.some((e) => e.endsWith(".tmp"))).toBe(false);
+    expect((await readConfig(dir)).ignore).toEqual(["scripts/seed"]);
   });
 });
 
@@ -229,7 +349,7 @@ describe("new tool registrations", () => {
     expect(scanFocusedSrc).toContain('"scan_over_engineering"');
   });
 
-  it("server.js header comment reflects 25 tools", async () => {
+  it("server.js header comment reflects 27 tools", async () => {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
     const { dirname } = await import("node:path");
@@ -239,7 +359,7 @@ describe("new tool registrations", () => {
       "utf8",
     );
 
-    expect(serverSrc).toContain("Exposes 25 tools");
+    expect(serverSrc).toContain("Exposes 27 tools");
   });
 
   it("registers clear_findings", async () => {

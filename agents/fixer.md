@@ -102,11 +102,32 @@ The `refactoringCategory` field tells you which extraction approach to use:
 - **`extract-function`**: An inline logic block is copy-pasted across call sites. Extract it into a named function in the nearest shared scope and replace both sites.
 - **`extract-config`**: Repeated data structures or configuration. Extract into a shared constant, factory, or config object.
 
+### ⚠️ Divergent literals — do NOT collapse them
+
+A duplicate finding may carry `divergentLiterals` (a count) and `divergenceSamples`
+(example differing values). This flags the **silent-behaviour-change trap**: the two
+blocks are token-structurally identical (often `similarity: 1.0`, because the
+tokenizer treats every string as equal) but differ in specific string or number
+**literal values** — e.g. `"Failed to delete client"` vs `"Failed to delete campaign"`,
+or a `bg-navy-50/50` vs `/30` Tailwind tint, or `10` vs `20`.
+
+When `divergentLiterals > 0`, the differing literals are almost always
+behaviour-significant. **Parameterise them** — the extracted function/component must
+take each divergent literal as an argument so every call site keeps its own value.
+**Never** collapse them to one value or genericise them away (that's a real bug, not
+a refactor). If parameterising would make the shared abstraction awkward or the
+values are genuinely meaningful per-site, the right move may be to **leave the code
+as-is** and mark the finding `false-positive` with a note — duplication that exists
+only to hold different constants is sometimes clearer left duplicated. Always run
+tests; a passing extraction that changed a literal is still a regression.
+
 ### Extraction workflow
 
-1. Read the `snippet` field first — it contains the duplicated code.
+1. Read the `snippet` field first — it contains the duplicated code. Check
+   `divergentLiterals` (see the warning above) before deciding how to extract.
 2. Read the surrounding context in each file to understand imports and dependencies.
-3. Create the shared extraction (new function, module, or constant).
+3. Create the shared extraction (new function, module, or constant), passing any
+   divergent literals as parameters/arguments rather than hard-coding one value.
 4. Update ALL sites listed in `locations` (for clusters) or both sides (for pairs).
 5. Run tests — extraction must not change behaviour.
 6. If the extraction requires a new shared module, place it alongside the consuming files or in a `shared`/`utils` directory following existing project conventions.

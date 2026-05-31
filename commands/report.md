@@ -53,6 +53,8 @@ Display findings from the last scan, with optional filtering by severity and cat
 
 5. **Handle no results**: If no findings match the filters, display a clear message indicating no findings were found matching the criteria.
 
+6. **Flagging files to never scan again**: If a finding is on a file the user never wants scanned (a seed script, a test/fixture script, a generated helper), call `update_ignore_list` with `{ "add": ["<project-relative path>"] }` to add it to the curated ignore list. A plain path silences a single file or an entire directory's contents; future scans skip it. This is distinct from marking a finding `ignored` (which silences one finding) and from `.gitignore`/`exclude`. Use `get_ignore_list` to show what's currently ignored and `update_ignore_list` with `remove` to un-flag.
+
 ## Examples
 
 ```

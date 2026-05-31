@@ -16,9 +16,26 @@ export const VALID_STATUSES = [
   "stale",
 ];
 
-export function generateFindingId(finding) {
+/**
+ * The line-INDEPENDENT identity of a finding: check + file + description + symbol.
+ * Deliberately excludes `startLine` so a finding keeps its id when surrounding edits
+ * shift it to a new line — that's what lets a triage verdict (false-positive/ignored)
+ * survive a re-scan instead of resurfacing as a "new" finding (the corrupt-memory
+ * workaround this replaces). `description`/`symbol` carry the per-finding specifics
+ * (the unused symbol's name, the duplicated file pair) that keep distinct findings
+ * distinct; `occurrence` (assigned in scan order by stampFindings) disambiguates the
+ * rare case of multiple findings sharing all of those in one file (e.g. two
+ * console.logs), preserving collision-safety without reintroducing the line number.
+ * @param {object} finding
+ * @param {number} [occurrence=0]
+ */
+export function findingSignature(finding) {
   const location = finding.locations?.[0] ?? {};
-  const raw = `${finding.check ?? ""}:${location.file ?? ""}:${location.startLine ?? ""}:${finding.description ?? ""}`;
+  return `${finding.check ?? ""}:${location.file ?? ""}:${finding.description ?? ""}:${finding.symbol ?? ""}`;
+}
+
+export function generateFindingId(finding, occurrence = 0) {
+  const raw = `${findingSignature(finding)}:${occurrence}`;
   return `f-${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;
 }
 
@@ -127,7 +144,19 @@ export function matchesFilter(finding, filter = {}) {
   );
 }
 
-/** Assign IDs and default status to incoming raw findings. */
+/**
+ * Assign IDs and default status to incoming raw findings. IDs are content-based
+ * and line-independent (see generateFindingId); `occurrence` is counted per
+ * signature ACROSS this scan's batch so multiple same-signature findings in one
+ * file get stable, distinct ids in scan order.
+ */
 export function stampFindings(findings) {
-  return findings.map((f) => ({ status: "open", ...f, id: f.id ?? generateFindingId(f) }));
+  const occurrences = new Map();
+  return findings.map((f) => {
+    if (f.id) return { status: "open", ...f };
+    const sig = findingSignature(f);
+    const n = occurrences.get(sig) ?? 0;
+    occurrences.set(sig, n + 1);
+    return { status: "open", ...f, id: generateFindingId(f, n) };
+  });
 }

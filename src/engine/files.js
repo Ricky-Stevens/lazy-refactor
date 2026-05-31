@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 
 import { gitignoredPaths } from "./gitignore.js";
 
@@ -128,6 +128,28 @@ export function compileExcludes(patterns) {
 
 function isExcluded(compiledPatterns, rel, name) {
   return compiledPatterns.some((rx) => rx.test(rel) || rx.test(name));
+}
+
+/**
+ * Count how many of `files` (absolute paths under `root`) match any of the given
+ * glob patterns, using the same rel-or-basename test as `collectFiles`. Used to
+ * report how many files the user's ignore list suppressed — so that suppression
+ * is visible in the scan result rather than silent (a security-relevant path can
+ * be exempted from scanning, and the user should be able to see that it was).
+ * @param {string[]} files - absolute paths
+ * @param {string} root - scan root the paths are relative to
+ * @param {string[]} patterns - glob patterns (already expanded)
+ * @returns {number}
+ */
+export function countMatchingFiles(files, root, patterns) {
+  if (patterns.length === 0) return 0;
+  const compiled = compileExcludes(patterns);
+  let count = 0;
+  for (const f of files) {
+    const rel = f.slice(root.length + 1);
+    if (isExcluded(compiled, rel, basename(f))) count++;
+  }
+  return count;
 }
 
 /**

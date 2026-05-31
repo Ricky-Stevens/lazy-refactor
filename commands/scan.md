@@ -76,6 +76,8 @@ workers never dispatch each other — *this command* fans them out.
    `count_findings` / paged `get_findings` (small, SQL-side counts; never materialise the
    whole set). Display:
    - The new run ID (each scan creates a new run)
+   - If the scan result includes `ignoredFiles` (> 0), state plainly that **N files were skipped by the project's ignore list** and were not scanned by ANY check — so the suppression is visible and the user can reconcile it (use `get_ignore_list` to show what's ignored). An ignored path exempts code from security checks too, so this is never hidden in the headline.
+   - If the scan result includes `carriedDismissals`, say plainly that **N findings you previously marked false-positive/ignored were carried forward** from the prior run (by stable finding id) and are already dismissed in this run — so prior triage is honoured automatically. **Trust this persisted state over any recollection or memory of "this repo is all noise":** finding statuses in the DB are the source of truth, assessed fresh per run. Do NOT pre-dismiss whole checks (e.g. "long-file is always noise here") from memory — long-file and dead-code are real signal and must be assessed against the actual current findings each run.
    - Count of findings by severity and category (post-assessment — dismissed findings now sit at `false-positive`)
    - The cross-category clusters from step 5, called out first
    - Brief summary of top issues

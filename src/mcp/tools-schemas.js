@@ -149,6 +149,22 @@ export const overridesSchema = z.object({
   overrides: z.record(z.unknown()).describe("Config fields to merge"),
 });
 
+export const ignoreUpdateSchema = z.object({
+  add: z
+    .array(z.string())
+    .max(MAX_BATCH)
+    .optional()
+    .describe(
+      "Project-relative files/dirs (or globs) to add to the ignore list. A plain path " +
+        "matches both a file and a directory's contents; future scans skip them.",
+    ),
+  remove: z
+    .array(z.string())
+    .max(MAX_BATCH)
+    .optional()
+    .describe("Entries to remove (matched after normalizing a leading ./ and trailing /)."),
+});
+
 export const setRunStatusSchema = z.object({
   id: z.string().optional().describe("Run ID (defaults to the active run)"),
   status: z.enum(RUN_STATUSES).describe("New run status"),

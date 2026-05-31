@@ -15,17 +15,23 @@ import {
 } from "../engine/cross-ref.js";
 import { detectLanguages } from "../engine/detect.js";
 import { scanDuplicates } from "../engine/duplicates.js";
-import { clearFileCache, collectFiles, LANGUAGE_EXTENSIONS } from "../engine/files.js";
+import {
+  clearFileCache,
+  collectFiles,
+  countMatchingFiles,
+  LANGUAGE_EXTENSIONS,
+} from "../engine/files.js";
 import { configureGitignore } from "../engine/gitignore.js";
+import { expandIgnorePatterns } from "../engine/ignore-list.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { checkOutdatedDeps } from "../engine/outdated.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
 import { scanToctou } from "../engine/toctou.js";
 import { scoreFindings } from "../scoring/prioritizer.js";
-import { addFindings, getSummary } from "../state/findings.js";
-import { createRun, getRun, setActiveRun } from "../state/runs.js";
-import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
+import { addFindings, carryForwardDismissals, getSummary } from "../state/findings.js";
+import { createRun, getActiveRunId, getRun, setActiveRun } from "../state/runs.js";
+import { buildRules, effectiveExclude, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 import {
   mapCluster,
   mapDeadExport,
@@ -210,6 +216,30 @@ async function collectFindings(resolvedPath, focus, config, languages, exclude) 
   return allFindings;
 }
 
+/**
+ * Count source files removed by the user-curated `ignore` list — i.e. files that
+ * pass the default `exclude` + `.gitignore` but live under an ignored path. Walks
+ * once with the BASE exclude (a different cache key than the engines use, so it
+ * doesn't interfere with their skipped-subtree detection) and matches the expanded
+ * ignore globs in memory. Returns 0 (no extra walk) when no ignore list is set.
+ * @param {string} resolvedPath
+ * @param {object} config
+ * @param {string[]} languages
+ * @param {string[]|undefined} extraExclude
+ * @returns {Promise<number>}
+ */
+async function countIgnoredFiles(resolvedPath, config, languages, extraExclude) {
+  const ignorePatterns = expandIgnorePatterns(config.ignore);
+  if (ignorePatterns.length === 0) return 0;
+  const baseExclude = [...config.exclude, ...(extraExclude ?? [])];
+  const baseFiles = await collectFiles(resolvedPath, {
+    exclude: baseExclude,
+    languages,
+    respectGitignore: config.respectGitignore !== false,
+  });
+  return countMatchingFiles(baseFiles, resolvedPath, ignorePatterns);
+}
+
 const DEFAULT_FOCUS = [
   "duplicates",
   "dead-code",
@@ -242,13 +272,22 @@ async function performScan(projectPath, scanPath, options) {
   const resolvedPath = await validateScanPath(scanPath);
   const config = await readConfig(projectPath);
   const focus = options.focus ?? DEFAULT_FOCUS;
-  const exclude = [...config.exclude, ...(options.exclude ?? [])];
+  // config.exclude (default noise globs) + the user-curated `ignore` list + any
+  // per-call extras, composed in one place so every scanner inherits the same set.
+  const exclude = effectiveExclude(config, options.exclude ?? []);
   const languages = await resolveLanguages(config, options.languages, resolvedPath);
   // Applies to every collectFiles call under this scan root (the chokepoint
   // reads it), so no need to thread a flag through each scanner.
   configureGitignore(resolvedPath, config.respectGitignore !== false);
 
   clearFileCache();
+
+  // Visibility for the user-curated ignore list: how many source files it removed
+  // beyond the default exclude/.gitignore. Only computed when an ignore list is
+  // active (one extra walk, skipped entirely otherwise) so suppression is never
+  // silent — an ignored path is exempt from ALL checks, security included.
+  const ignoredFiles = await countIgnoredFiles(resolvedPath, config, languages, options.exclude);
+
   const allFindings = await collectFindings(resolvedPath, focus, config, languages, exclude);
   const engineWarnings = allFindings.warnings;
   const scored = scoreFindings(filterDisabledChecks(allFindings, config));
@@ -258,6 +297,7 @@ async function performScan(projectPath, scanPath, options) {
   await addFindings(projectPath, scored, scanId, resolvedPath);
 
   const result = { scanId, totalFindings: scored.length, summary: await getSummary(projectPath) };
+  if (ignoredFiles > 0) result.ignoredFiles = ignoredFiles;
   if (engineWarnings?.length > 0) result.warnings = engineWarnings;
   return result;
 }
@@ -281,8 +321,14 @@ export function registerRunScan(server, projectPath) {
     },
     async ({ path: scanPath, options = {} }) => {
       try {
+        // The run active before this one is the source for carrying dismissals
+        // forward (by stable id) so prior triage isn't lost on a fresh scan.
+        const priorRunId = getActiveRunId(projectPath);
         const run = createRun(projectPath, {});
-        return ok({ runId: run.id, ...(await performScan(projectPath, scanPath, options)) });
+        const result = await performScan(projectPath, scanPath, options);
+        const carried = await carryForwardDismissals(projectPath, priorRunId);
+        if (carried) result.carriedDismissals = carried;
+        return ok({ runId: run.id, ...result });
       } catch (err) {
         return fail(err);
       }

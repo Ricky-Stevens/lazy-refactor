@@ -5,6 +5,7 @@ import { detectLanguage, isEntryPoint, isTestFile } from "./classify.js";
 import { extractExports } from "./extract-exports.js";
 import { extractImports } from "./extract-imports.js";
 import { computeReachableFiles } from "./reachability.js";
+import { loadAliasResolver } from "./tsconfig-paths.js";
 
 /**
  * Return a Set of absolute file paths that were added to git within the last `days` days.
@@ -151,8 +152,11 @@ export async function scanDeadCode(path, _rules = {}, options = {}) {
 
   // Files whose exports are reachable via an `export *` barrel or dynamic
   // import() are exempt — their symbols are consumed without ever appearing in a
-  // named import, so flagging (and deleting) them would break live code.
-  const reachable = computeReachableFiles(fileData);
+  // named import, so flagging (and deleting) them would break live code. The
+  // tsconfig `paths` resolver lets alias barrels (`export * from '@/x'`) resolve
+  // too — the dominant dead-code FP on path-aliased Next.js apps.
+  const aliasResolver = await loadAliasResolver(path);
+  const reachable = computeReachableFiles(fileData, aliasResolver);
 
   const findings = [];
   for (const { file, language, content, exports } of fileData) {

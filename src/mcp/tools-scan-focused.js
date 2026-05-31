@@ -14,7 +14,7 @@ import { configureGitignore } from "../engine/gitignore.js";
 import { computeMetrics } from "../engine/metrics.js";
 import { scanPatterns } from "../engine/pattern-scanner.js";
 import { scanInconsistentPatterns, scanOverEngineering } from "../engine/patterns.js";
-import { buildRules, fail, ok, readConfig, validateScanPath } from "./helpers.js";
+import { buildRules, effectiveExclude, fail, ok, readConfig, validateScanPath } from "./helpers.js";
 
 const DEFAULT_SCAN_LIMIT = 200;
 
@@ -65,7 +65,7 @@ export function boundFindings(items, { limit, offset, compact } = {}) {
  * Resolve scan path, config, and detected languages in one call.
  * @param {string} scanPath
  * @param {string} projectPath
- * @returns {{ resolvedPath: string, config: object, langs: string[] }}
+ * @returns {{ resolvedPath: string, config: object, langs: string[], exclude: string[] }}
  */
 async function resolveScanContext(scanPath, projectPath) {
   const resolvedPath = await validateScanPath(scanPath);
@@ -73,7 +73,9 @@ async function resolveScanContext(scanPath, projectPath) {
   configureGitignore(resolvedPath, config.respectGitignore !== false);
   clearFileCache();
   const detected = await detectLanguages(resolvedPath);
-  return { resolvedPath, config, langs: detected.languages };
+  // `exclude` already folds in the user-curated `ignore` list, so every focused
+  // scan honours it without each handler re-composing the set.
+  return { resolvedPath, config, langs: detected.languages, exclude: effectiveExclude(config) };
 }
 
 /**
@@ -96,8 +98,8 @@ function registerSimpleScanTool(server, projectPath, name, description, scanFn) 
     },
     async ({ path: scanPath, limit, offset, compact }) => {
       try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
-        const findings = await scanFn(resolvedPath, { exclude: config.exclude, languages: langs });
+        const { resolvedPath, langs, exclude } = await resolveScanContext(scanPath, projectPath);
+        const findings = await scanFn(resolvedPath, { exclude, languages: langs });
         return ok(boundFindings(findings, { limit, offset, compact }));
       } catch (err) {
         return fail(err);
@@ -140,7 +142,7 @@ export function registerFocusedScanTools(server, projectPath) {
           similarity,
           minConfidence,
           excludeTests,
-          exclude: config.exclude,
+          exclude: effectiveExclude(config),
         });
         return ok(boundFindings(findings, page));
       } catch (err) {
@@ -161,11 +163,11 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath, limit, offset, compact }) => {
       try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
+        const { resolvedPath, langs, exclude } = await resolveScanContext(scanPath, projectPath);
         const [dead, unusedDeps, unusedImports] = await Promise.all([
-          scanDeadCode(resolvedPath, {}, { exclude: config.exclude, languages: langs }),
-          scanUnusedDeps(resolvedPath, { exclude: config.exclude }),
-          scanUnusedImports(resolvedPath, { exclude: config.exclude, languages: langs }),
+          scanDeadCode(resolvedPath, {}, { exclude, languages: langs }),
+          scanUnusedDeps(resolvedPath, { exclude }),
+          scanUnusedImports(resolvedPath, { exclude, languages: langs }),
         ]);
         // Each of the three lists is paged independently so no single sub-array can blow up.
         const dc = boundFindings(dead, { limit, offset, compact });
@@ -205,12 +207,15 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath, thresholds, limit, offset, compact }) => {
       try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
+        const { resolvedPath, config, langs, exclude } = await resolveScanContext(
+          scanPath,
+          projectPath,
+        );
         const mergedThresholds = { ...config.thresholds, ...(thresholds ?? {}) };
         const result = await computeMetrics(resolvedPath, {
           ...mergedThresholds,
           languages: langs,
-          exclude: config.exclude,
+          exclude,
         });
         // computeMetrics returns { fileMetrics, findings }. findings (threshold violations)
         // is the actionable list and is paged; fileMetrics is one entry per scanned file —
@@ -245,10 +250,10 @@ export function registerFocusedScanTools(server, projectPath) {
     },
     async ({ path: scanPath, categories, limit, offset, compact }) => {
       try {
-        const { resolvedPath, config, langs } = await resolveScanContext(scanPath, projectPath);
+        const { resolvedPath, langs, exclude } = await resolveScanContext(scanPath, projectPath);
         const rules = filterRulesByCategory(buildRules(langs), categories);
         const findings = await scanPatterns(resolvedPath, rules, {
-          exclude: config.exclude,
+          exclude,
           languages: langs,
         });
         return ok(boundFindings(findings, { limit, offset, compact }));

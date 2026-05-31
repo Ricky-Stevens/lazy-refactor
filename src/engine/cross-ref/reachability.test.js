@@ -28,6 +28,24 @@ describe("computeReachableFiles", () => {
     expect(reachable.has(`${root}/lazy.ts`)).toBe(true);
   });
 
+  it("does NOT resolve an alias barrel without a resolver (documented residual)", () => {
+    const data = [
+      fd("index.ts", "export * from '@/widget';"),
+      fd("widget.ts", "export function Widget() {}"),
+    ];
+    expect(computeReachableFiles(data).has(`${root}/widget.ts`)).toBe(false);
+  });
+
+  it("resolves an alias barrel when a tsconfig paths resolver is supplied", () => {
+    const data = [
+      fd("index.ts", "export * from '@/widget';"),
+      fd("widget.ts", "export function Widget() {}"),
+    ];
+    const aliasResolver = (spec) => (spec.startsWith("@/") ? [`${root}/${spec.slice(2)}`] : []);
+    const reachable = computeReachableFiles(data, aliasResolver);
+    expect(reachable.has(`${root}/widget.ts`)).toBe(true);
+  });
+
   it("resolves a directory specifier to its index file", () => {
     const data = [
       fd("app.ts", "export * from './feature';"),

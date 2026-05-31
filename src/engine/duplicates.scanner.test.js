@@ -52,6 +52,62 @@ describe("scanDuplicates integration", () => {
     expect(files.some((f) => f.endsWith("fileB.js"))).toBe(true);
   });
 
+  it("flags divergent string/number literals between otherwise-identical blocks", async () => {
+    // The two blocks are token-structurally identical (similarity ~1.0 — strings
+    // collapse to one sentinel), differing ONLY in a string and a number literal.
+    // This is the silent-behaviour-change trap: report it so a fixer parameterises
+    // the literals instead of collapsing them to one value.
+    const block = (msg, limit) =>
+      `
+function handle(input) {
+  const label = "${msg}";
+  const limit = ${limit};
+  const scaled = input * 2;
+  const adjusted = scaled + limit;
+  const checked = adjusted > limit ? adjusted : limit;
+  const result = checked - 5;
+  logger.info(label, result);
+  return result;
+}
+`.trim();
+    const subDir = join(dir, "dup-literals");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "a.js"), block("failed to delete client", 10));
+    await writeFile(join(subDir, "b.js"), block("failed to delete campaign", 20));
+
+    const all = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const dupe = all.find((f) => f.check === "duplicate");
+    expect(dupe).toBeDefined();
+    // Token similarity is high (strings are sentinel-collapsed) yet the literals differ.
+    expect(dupe.similarity).toBeGreaterThanOrEqual(0.9);
+    expect(dupe.divergentLiterals).toBeGreaterThanOrEqual(2);
+    const flat = dupe.divergenceSamples.flatMap((s) => [s.a, s.b]);
+    expect(flat.some((v) => v.includes("client"))).toBe(true);
+    expect(flat).toContain("10");
+  });
+
+  it("reports zero divergent literals for byte-identical blocks", async () => {
+    const block = `
+function tally(input) {
+  const base = "constant";
+  const factor = 3;
+  const scaled = input * factor;
+  const adjusted = scaled + factor;
+  const result = adjusted > 100 ? 100 : adjusted;
+  return result + base.length;
+}
+`.trim();
+    const subDir = join(dir, "dup-identical");
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(subDir, "a.js"), block);
+    await writeFile(join(subDir, "b.js"), block);
+
+    const all = await scanDuplicates(subDir, { minTokens: 20, similarity: 0.7 });
+    const dupe = all.find((f) => f.check === "duplicate");
+    expect(dupe).toBeDefined();
+    expect(dupe.divergentLiterals).toBe(0);
+  });
+
   it("respects the similarity threshold — below threshold is not flagged", async () => {
     const subDir = join(dir, "dup-threshold");
     await mkdir(subDir, { recursive: true });

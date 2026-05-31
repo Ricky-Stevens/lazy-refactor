@@ -1,13 +1,13 @@
 /**
  * MCP server entry point for lazy-refactor.
  *
- * Exposes 25 tools:
+ * Exposes 27 tools:
  *   Scan:   run_scan, resume_scan, scan_duplicates, scan_dead_code, scan_metrics, scan_patterns,
  *           detect_language, scan_inconsistent_patterns, scan_over_engineering
  *   Runs:   list_runs, get_active_run, set_active_run, set_run_status, delete_run
  *   State:  get_findings, get_findings_by_ids, count_findings, group_findings, get_summary,
  *           update_finding, update_findings, prune_findings, clear_findings
- *   Config: get_config, update_config
+ *   Config: get_config, update_config, get_ignore_list, update_ignore_list
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,7 +25,7 @@ const projectPath = process.cwd();
 
 const server = new McpServer({
   name: "lazy-refactor",
-  version: "0.12.0",
+  version: "0.14.0",
 });
 
 registerRunScan(server, projectPath);

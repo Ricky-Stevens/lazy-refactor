@@ -63,6 +63,39 @@ describe("generateFindingId", () => {
     const f = makeFinding({ check: "stable", locations: [{ file: "x.js", startLine: 42 }] });
     expect(generateFindingId(f)).toBe(generateFindingId(f));
   });
+
+  it("is LINE-INDEPENDENT — a moved finding keeps its id", () => {
+    const atLine10 = makeFinding({ locations: [{ file: "x.js", startLine: 10 }] });
+    const atLine99 = makeFinding({ locations: [{ file: "x.js", startLine: 99 }] });
+    expect(generateFindingId(atLine10)).toBe(generateFindingId(atLine99));
+  });
+
+  it("distinguishes findings by symbol and by occurrence index", () => {
+    const a = makeFinding({ symbol: "foo" });
+    const b = makeFinding({ symbol: "bar" });
+    expect(generateFindingId(a)).not.toBe(generateFindingId(b));
+    // Same signature, different occurrence → different id.
+    expect(generateFindingId(a, 0)).not.toBe(generateFindingId(a, 1));
+  });
+});
+
+describe("stampFindings", () => {
+  it("assigns stable, line-independent ids and disambiguates same-signature findings", async () => {
+    const { stampFindings } = await import("./findings-helpers.js");
+    // Two findings identical in signature (same check/file/description, no symbol)
+    // but on different lines — e.g. two console.logs in one file.
+    const f1 = makeFinding({ locations: [{ file: "a.js", startLine: 5 }] });
+    const f2 = makeFinding({ locations: [{ file: "a.js", startLine: 50 }] });
+    const stamped = stampFindings([f1, f2]);
+    // Distinct ids (occurrence index disambiguates), and stable across re-stamping.
+    expect(stamped[0].id).not.toBe(stamped[1].id);
+    const restamped = stampFindings([
+      makeFinding({ locations: [{ file: "a.js", startLine: 7 }] }), // moved
+      makeFinding({ locations: [{ file: "a.js", startLine: 70 }] }),
+    ]);
+    expect(restamped[0].id).toBe(stamped[0].id);
+    expect(restamped[1].id).toBe(stamped[1].id);
+  });
 });
 
 // ---------------------------------------------------------------------------

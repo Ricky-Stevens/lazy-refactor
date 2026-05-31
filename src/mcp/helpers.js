@@ -1,6 +1,7 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { expandIgnorePatterns } from "../engine/ignore-list.js";
 import commonRules from "../rules/common.js";
 import csharpRules from "../rules/csharp.js";
 import goRules from "../rules/go.js";
@@ -45,6 +46,11 @@ const DEFAULT_CONFIG = {
     "**/playwright-report/**",
   ],
   disabledChecks: [],
+  // User-curated list of project-relative files/dirs to permanently skip — kept
+  // SEPARATE from `exclude` (default noise globs) and `.gitignore` so a user can
+  // flag one-off things (seed/test scripts, fixtures) without polluting either.
+  // Expanded into exclude globs at scan time via `effectiveExclude`.
+  ignore: [],
   languages: "auto",
   // Respect .gitignore (via `git check-ignore`) so generated/vendored artifacts
   // already ignored by the project aren't scanned. No-ops outside a git repo.
@@ -109,7 +115,7 @@ export async function validateScanPath(inputPath) {
 // crash the scan downstream (compileExcludes/array spreads, thresholds derefs).
 // Normalization belongs here at the config boundary, not in the engine.
 function normalizeConfig(merged) {
-  for (const key of ["exclude", "disabledChecks"]) {
+  for (const key of ["exclude", "disabledChecks", "ignore"]) {
     if (typeof merged[key] === "string") merged[key] = [merged[key]];
     else if (!Array.isArray(merged[key])) merged[key] = [...DEFAULT_CONFIG[key]];
   }
@@ -137,9 +143,21 @@ export async function readConfig(projectPath) {
   }
 }
 
-// Writes the full merged object rather than a diff for auditability
+// Writes the full merged object rather than a diff for auditability. Written
+// atomically (temp file + rename) so a crash mid-write can't truncate the user's
+// whole config — a plain writeFile here would risk losing exclude/thresholds/
+// disabledChecks, not just the field being changed. rename(2) within a directory
+// is atomic on POSIX; a leftover temp file on failure is cleaned up best-effort.
 export async function writeConfig(projectPath, config) {
-  await writeFile(join(projectPath, CONFIG_FILE), JSON.stringify(config, null, 2), "utf8");
+  const target = join(projectPath, CONFIG_FILE);
+  const tmp = `${target}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(config, null, 2), "utf8");
+    await rename(tmp, target);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 // Always includes common rules
@@ -151,6 +169,19 @@ export function buildRules(languages) {
     }
   }
   return rules;
+}
+
+/**
+ * Compose the full exclude set for a scan: the config `exclude` noise globs, the
+ * user-curated `ignore` list (expanded to globs), and any per-call extras. Single
+ * source of truth so every scan entry point (run/resume + the focused scans)
+ * applies the ignore list identically — there's no per-scanner threading.
+ * @param {object} config
+ * @param {string[]} [extra]
+ * @returns {string[]}
+ */
+export function effectiveExclude(config, extra = []) {
+  return [...config.exclude, ...expandIgnorePatterns(config.ignore), ...extra];
 }
 
 export function ok(data) {

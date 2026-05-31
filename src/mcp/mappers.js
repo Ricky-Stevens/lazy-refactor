@@ -26,6 +26,22 @@ const CATEGORY_SUGGESTIONS = {
   "extract-config": "Extract the repeated data structure into a shared constant or factory.",
 };
 
+// Appended to a duplicate's suggestion when the two blocks differ in string/number
+// literals. Merging them naively (collapsing to one value) is a silent behaviour
+// change — these MUST be turned into parameters/arguments, not eliminated.
+function divergenceWarning(f) {
+  if (!f.divergentLiterals) return "";
+  const eg = (f.divergenceSamples ?? [])
+    .map((s) => `${s.a} vs ${s.b}`)
+    .slice(0, 3)
+    .join("; ");
+  return (
+    ` ⚠️ These blocks differ in ${f.divergentLiterals} literal value(s)` +
+    (eg ? ` (e.g. ${eg})` : "") +
+    " — these are likely behaviour-significant: parameterise them, do NOT collapse to a single value. Verify with tests."
+  );
+}
+
 export function mapDupe(f, resolvedPath) {
   const refactoringCategory = f.category ?? "extract-function";
   const fileA = rel(f.fileA, resolvedPath);
@@ -43,12 +59,15 @@ export function mapDupe(f, resolvedPath) {
     startLineB: f.startLineB,
     endLineB: f.endLineB,
     suggestion:
-      CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"],
+      (CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"]) +
+      divergenceWarning(f),
     fixable: true,
     confidence: f.confidence ?? f.similarity,
     refactoringCategory,
     structuralRatio: f.structuralRatio,
     tokenDiversity: f.tokenDiversity,
+    divergentLiterals: f.divergentLiterals ?? 0,
+    divergenceSamples: f.divergenceSamples ?? [],
     snippet: f.snippet ?? null,
     language: f.language ?? "common",
   };
@@ -69,10 +88,13 @@ export function mapCluster(f, resolvedPath) {
     locations,
     description: `Duplicate pattern across ${f.filesAffected ?? locations.length} files (${f.totalDuplicatedLines ?? 0} duplicated lines, ${f.memberCount ?? locations.length} regions)`,
     suggestion:
-      CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"],
+      (CATEGORY_SUGGESTIONS[refactoringCategory] ?? CATEGORY_SUGGESTIONS["extract-function"]) +
+      divergenceWarning(f),
     fixable: true,
     confidence: f.avgSimilarity ?? 0.8,
     refactoringCategory,
+    divergentLiterals: f.divergentLiterals ?? 0,
+    divergenceSamples: f.divergenceSamples ?? [],
     impact: f.impact ?? 0,
     totalDuplicatedLines: f.totalDuplicatedLines ?? 0,
     filesAffected: f.filesAffected ?? locations.length,
