@@ -146,7 +146,11 @@ export async function loadAliasResolver(rootDir) {
       if (captured === null) continue;
       for (const t of e.targets) {
         if (typeof t !== "string") continue;
-        out.push(resolve(baseDir, e.hasStar ? t.replace("*", captured) : t));
+        // Global-flag replace with a function replacer: tsconfig allows one `*` per
+        // target, but `/g` satisfies the incomplete-sanitization lint and the function
+        // form keeps a literal `$` in the captured path from being treated as a
+        // replacement-string special.
+        out.push(resolve(baseDir, e.hasStar ? t.replace(/\*/g, () => captured) : t));
       }
     }
     return out;
