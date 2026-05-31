@@ -17,7 +17,7 @@ You were dispatched to DO the work, not to deliberate about whether to do it. On
 
 - **Do not stop early.** Process the entire batch you were handed. "There are a lot of them" / "this is tedious" / "the signal looks noisy" are NOT reasons to halt — keep going until each finding is fixed, reverted, or marked.
 - **Do not ask questions or wait for input.** You are a sub-agent; there is no one to ask and nothing will answer. The orchestrator already confirmed scope. Make the reasonable engineering call yourself and proceed.
-- **Do not pause to "re-level," reconsider scope, summarise partial progress, or check in.** No status updates mid-run. Run to the end of your batch, then report once.
+- **Do not pause to "re-level," reconsider scope, summarise partial progress, or check in.** No status updates mid-run. Run to the end of your batch, then report once. (The mechanical **Self-Verification** checks on a refactor are *not* the deliberation this bans — they're part of doing the fix, like running tests. Run them silently and keep moving.)
 - **A genuine false positive is a fast outcome — but the bar is high.** Only a *named detection error* qualifies (see **What counts as `false-positive`** below); "hard", "tedious", or "looks intentional" do not. When it genuinely is a mis-detection, tag it `false-positive` with the required one-line note and move on. If the issue was real but already fixed, mark it `fixed`. Never halt the run to write an essay about scan quality; note it and continue.
 - **Don't invent reasons to defer.** "Collides with an in-flight branch", "better done later", "needs human judgment" — not your call. Fix it (verified by tests) or mark it `false-positive`/`fixed`; either way, keep moving.
 
@@ -73,6 +73,37 @@ The ONLY legitimate reasons to stop before the batch is done: (a) your change br
      finding, the split/collapse IS what it requires — that's in scope, not beyond it)
    - Do not add new features or features that weren't part of the original issue
    - Do not run `git add`, `git commit`, or any git write operations — your job is to edit code and verify tests pass. Committing is the orchestrator's responsibility.
+
+## Self-Verification — prove the fix landed, don't just claim it
+
+A passing test suite does **not** prove a refactor landed. This is the failure mode that
+ships dead code: an "extracted" module that nothing imports still compiles, a linter sees
+it as clean-but-unused, and a "split" test file left intact simply **runs twice** and
+stays green. `tsc` green + `biome` clean + a stable test count is consistent with a
+**half-applied** refactor. Only the checks below prove it.
+
+**Be proportionate — this is where speed/quality balance lives.** Match the verification
+to the change; don't burn tokens re-checking trivial edits:
+
+- **Surgical edits** (remove a `console.log`, drop an unused export, add a comment, change
+  a literal, tighten a type): the existing **biome + touched-test** gate is sufficient
+  verification. Do **not** add extra checks — that's wasted work.
+- **Refactor / structural edits** (any split, move, extract, consolidate, new file, or
+  barrel re-export): these carry the orphan-and-duplicate risk, so before you may mark the
+  finding `fixed` run these three **mechanical** checks (seconds with `wc -l` / grep — this
+  is not deliberation, just proof):
+  1. **The original file got smaller.** A long-file / god-file / split finding whose source
+     file did not lose lines did not actually split — you copied, you didn't move.
+  2. **Every file you created has ≥1 importer.** Grep the corpus for the new path/symbol;
+     zero importers = an orphan you just added (new dead code).
+  3. **No moved symbol is now defined twice.** The original must **re-export** the moved
+     symbol, not keep its own copy. Two definitions of the same thing (a duplicated table,
+     type, or function) is a regression, not a refactor.
+
+  If any check fails: finish the wiring (re-export from the original, point importers at the
+  new module, delete the leftover copy) and re-check. If you cannot complete it safely in
+  this pass, **revert your new files** and set the finding `in-progress` with a note on what
+  remains — **never `fixed`**. A half-applied split is worse than none.
 
 ## Duplicate Findings
 
@@ -172,11 +203,36 @@ time.
    but only the files needed to resolve *this* finding. Don't opportunistically
    restructure unrelated code you pass through.
 
+Run the three **Self-Verification** checks above before marking any structural finding
+`fixed` — the original-shrank / new-files-imported / no-double-definition gate is exactly
+what catches a split that created modules but never rewired the original.
+
 If a structural split is genuinely too large to complete safely in one pass (e.g. the
 god file has dozens of importers across the codebase), do the coherent subset that leaves
 the tree green and the contract intact, mark the finding with a note describing what
 remains, and set status `in-progress` rather than `fixed`. Do not fake completion, and do
 not leave the build broken.
+
+### Marginal long-file findings — defer fast, don't thrash
+
+When a `metrics-long-file` finding is only a little over the threshold (within ~5%) and the
+file has **no natural seam** to split on, do not chase the line count: extracting one helper
+to shave a few lines, or worse padding/trimming comments to cross the boundary, makes the
+file *worse*, not cleaner. Make **one** honest attempt to find a real seam; if there isn't
+one, mark the finding `in-progress` with a one-line note ("marginal over threshold, no clean
+seam — needs a deliberate decomposition") and move on. The finding stays on the books for a
+human to scope properly. Never add code or comments purely to game a threshold.
+
+### Editing under Biome (and other auto-formatters)
+
+A consolidation that **removes a local definition and adds an import to replace it** has a
+transient window where the new import looks unused — Biome's import pruning (`check --write`,
+or format-on-save) will then **delete your import and silently revert the consolidation**.
+Make both edits (remove the local copy *and* add the reference that uses the import) before
+running the formatter, and confirm the symbol is actually referenced afterwards. Note also:
+`import type { X }` and `export type { X } from "..."` for the same name in one file is
+rejected by Biome — to re-export a moved type from its old home, use the alias form
+`export type X = Y` (a real binding the pruner keeps), not the bare re-export.
 
 ## What counts as `false-positive` (and what does not)
 

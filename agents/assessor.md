@@ -82,7 +82,13 @@ given:
      drives `/fix <severity>` and `report --orderBy severity`, so your judgment actually
      flows downstream — set it deliberately, not as an afterthought.
    - **`notes`**: a terse evidence string citing specific lines/files, plus the suggested
-     fix or split strategy. Don't restate the whole calibration.
+     fix. Don't restate the whole calibration. **For a structural finding (modularity /
+     over-engineering) the note IS the fixer's plan — make it a concrete, file-level seam
+     plan it can execute verbatim**, not a vague "consider splitting". Say which concerns go
+     to which new module (and roughly which line ranges), or which abstraction collapses into
+     which call sites. A precise plan is what stops the fixer rediscovering the seam — or
+     chasing a dead end like an unnecessary helper extraction — and is the cheapest leverage
+     you have on fix throughput.
 
 4. **Record everything in ONE `update_findings` call** using the `updates` mode, e.g.
    `update_findings({ updates: [{ id: "f-...", status: "open", severity: "high", notes: "god file: 3 concerns — split auth/io/render" }, { id: "f-...", status: "false-positive", notes: "wrapper is the public API boundary; justified" }] })`.
@@ -95,7 +101,7 @@ given:
 Severity reflects **impact**, not effort to fix.
 
 - **Critical**: Security vulnerabilities, data loss, crashes, broken access control
-- **High**: Correctness bugs (wrong behavior, silently ignoring configuration, broken contracts between modules). If code produces wrong results or silently drops user intent, it's high — even if nothing crashes.
+- **High**: Correctness bugs (wrong behavior, silently ignoring configuration, broken contracts between modules). If code produces wrong results or silently drops user intent, it's high — even if nothing crashes. A concrete pattern: client code reading a runtime-injected config value the wrong way (e.g. `process.env.NEXT_PUBLIC_*` read directly instead of the hydrated config object, so the deployed value is silently ignored — see the team's env-var-hydration note) is **high**, not medium. Grading these correctly matters downstream: a `high`/`critical` verdict lets `/fix` pull the finding in even when its engine confidence is below the bulk floor, so an under-graded correctness bug is one a bulk fix will silently skip.
 - **Medium**: Structural debt (god files, duplication over 50 lines), performance issues with measurable impact, missing error handling at system boundaries
 - **Low**: Minor duplication (under 50 lines), style inconsistencies, dead code, missing documentation, cosmetic issues
 
