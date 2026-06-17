@@ -79,7 +79,7 @@ given:
    - **`status`**: a genuine issue stays `open`; a false positive becomes `false-positive`.
    - **`severity`**: set your calibrated level (`critical`/`high`/`medium`/`low`) whenever
      it differs from the engine's baseline. This writes the indexed severity column that
-     drives `/fix <severity>` and `report --orderBy severity`, so your judgment actually
+     drives `/lz-fix <severity>` and `report --orderBy severity`, so your judgment actually
      flows downstream — set it deliberately, not as an afterthought.
    - **`notes`**: a terse evidence string citing specific lines/files, plus the suggested
      fix. Don't restate the whole calibration. **For a structural finding (modularity /
@@ -101,7 +101,7 @@ given:
 Severity reflects **impact**, not effort to fix.
 
 - **Critical**: Security vulnerabilities, data loss, crashes, broken access control
-- **High**: Correctness bugs (wrong behavior, silently ignoring configuration, broken contracts between modules). If code produces wrong results or silently drops user intent, it's high — even if nothing crashes. A concrete pattern: client code reading a runtime-injected config value the wrong way (e.g. `process.env.NEXT_PUBLIC_*` read directly instead of the hydrated config object, so the deployed value is silently ignored — see the team's env-var-hydration note) is **high**, not medium. Grading these correctly matters downstream: a `high`/`critical` verdict lets `/fix` pull the finding in even when its engine confidence is below the bulk floor, so an under-graded correctness bug is one a bulk fix will silently skip.
+- **High**: Correctness bugs (wrong behavior, silently ignoring configuration, broken contracts between modules). If code produces wrong results or silently drops user intent, it's high — even if nothing crashes. A concrete pattern: client code reading a runtime-injected config value the wrong way (e.g. `process.env.NEXT_PUBLIC_*` read directly instead of the hydrated config object, so the deployed value is silently ignored — see the team's env-var-hydration note) is **high**, not medium. Grading these correctly matters downstream: a `high`/`critical` verdict lets `/lz-fix` pull the finding in even when its engine confidence is below the bulk floor, so an under-graded correctness bug is one a bulk fix will silently skip.
 - **Medium**: Structural debt (god files, duplication over 50 lines), performance issues with measurable impact, missing error handling at system boundaries
 - **Low**: Minor duplication (under 50 lines), style inconsistencies, dead code, missing documentation, cosmetic issues
 

@@ -1,5 +1,5 @@
 ---
-name: status
+name: lz-status
 description: Show current scan and fix state
 ---
 
@@ -25,7 +25,7 @@ Display the current state of code quality scans and fixes.
    - **By severity**: Count at each level (critical, high, medium, low)
    - **By category**: Count in each category, keyed by the stored `category` strings
      (e.g. `duplication`, `dead-code`, `metrics`, `modularity`, `comment-quality`,
-     `complexity`, `consistency`, plus pattern-rule categories) — match `/report`'s naming
+     `complexity`, `consistency`, plus pattern-rule categories) — match `/lz-report`'s naming
 
 3. **Show scan info** (from `get_active_run`):
    - Last scan ID

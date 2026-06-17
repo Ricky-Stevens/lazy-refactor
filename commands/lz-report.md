@@ -1,5 +1,5 @@
 ---
-name: report
+name: lz-report
 description: Show findings from last scan
 ---
 

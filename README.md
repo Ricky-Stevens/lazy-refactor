@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/Ricky-Stevens/lazy-refactor/graph/badge.svg)](https://codecov.io/gh/Ricky-Stevens/lazy-refactor)
 [![Semgrep](https://img.shields.io/badge/security-semgrep-blue)](https://github.com/Ricky-Stevens/lazy-refactor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.15.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
+[![version](https://img.shields.io/badge/version-0.16.0-blue)](https://github.com/Ricky-Stevens/lazy-refactor/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun%201.3%2B-f9f1e1)](https://bun.sh)
 
 Code with AI at full speed. Clean up after it automatically.
@@ -59,7 +59,7 @@ This is fine while you're moving fast. It's not fine when you need to maintain i
 
 **Scan** -- deterministic analysis with zero LLM cost. Pattern matching, metrics, Rabin-Karp duplicate detection with structural-entropy scoring, cross-reference analysis for dead code. Findings are scored by confidence and impact so you fix what matters first.
 
-**Assess** -- some categories (modularity, comment quality, over-engineering, inconsistent patterns) are subjective — the engine can flag a candidate but can't decide if it's real. AI assessor agents fan out in parallel over those findings, confirm or dismiss each one, and set its final severity. Deterministic findings (duplicates, dead code, metrics, patterns) skip this step. This runs automatically inside `/scan` — you don't invoke it separately.
+**Assess** -- some categories (modularity, comment quality, over-engineering, inconsistent patterns) are subjective — the engine can flag a candidate but can't decide if it's real. AI assessor agents fan out in parallel over those findings, confirm or dismiss each one, and set its final severity. Deterministic findings (duplicates, dead code, metrics, patterns) skip this step. This runs automatically inside `/lz-scan` — you don't invoke it separately.
 
 **Fix** -- an AI fixer agent reads each finding, understands the context, makes the minimal extraction or cleanup, runs your test suite, and rolls back if anything breaks. Fixers fan out in parallel, one per file group, so a large run completes in waves rather than one finding at a time. For duplicate code, the fixer classifies the refactoring strategy automatically:
 
@@ -75,21 +75,21 @@ Every fix is verified by your existing test suite. No fix ships without passing 
 ## Quick start
 
 ```
-/lazy-refactor:scan .
-/lazy-refactor:report
-/lazy-refactor:fix all
+/lazy-refactor:lz-scan .
+/lazy-refactor:lz-report
+/lazy-refactor:lz-fix all
 ```
 
 ### Slash commands
 
 | Command | Description |
 |---|---|
-| `/lazy-refactor:scan [path] [--focus=...] [--exclude=...]` | Scan the codebase for quality issues (creates a new run) |
-| `/lazy-refactor:fix <id\|all\|critical\|high> [--dry-run] [--yes]` | Fix findings (bulk targets filter by `fixable: true`) |
-| `/lazy-refactor:report [--severity=high] [--language=go]` | Show findings from the active run |
-| `/lazy-refactor:status` | Show current scan and fix state |
-| `/lazy-refactor:list [--all]` | List previous scan runs |
-| `/lazy-refactor:resume <id>` | Switch back to a previous run and keep fixing (no re-scan) |
+| `/lazy-refactor:lz-scan [path] [--focus=...] [--exclude=...]` | Scan the codebase for quality issues (creates a new run) |
+| `/lazy-refactor:lz-fix <id\|all\|critical\|high> [--dry-run] [--yes]` | Fix findings (bulk targets filter by `fixable: true`) |
+| `/lazy-refactor:lz-report [--severity=high] [--language=go]` | Show findings from the active run |
+| `/lazy-refactor:lz-status` | Show current scan and fix state |
+| `/lazy-refactor:lz-list [--all]` | List previous scan runs |
+| `/lazy-refactor:lz-resume <id>` | Switch back to a previous run and keep fixing (no re-scan) |
 
 **Scan flags:** `--focus=duplicates,dead-code,metrics,patterns,inconsistent-patterns,over-engineering,outdated` limits the scan to specific categories; `--exclude=<glob>` skips paths (supports `*`, `**`, `?`, `{a,b}`). **Fix flags:** `--dry-run` reports what would change without touching files or running tests; `--yes` skips the confirmation prompt.
 
@@ -99,9 +99,9 @@ Three Sonnet sub-agents do the AI work. You don't invoke them directly — the s
 
 | Agent | Role | Dispatched by |
 |---|---|---|
-| **scanner** | Runs the deterministic engine scans, persists findings, returns per-category counts. Makes zero `Read` calls and does no triage — fast and complete. | `/scan` |
-| **assessor** | Deep-triages the four subjective categories (modularity, comment quality, over-engineering, inconsistent patterns) the engine can't decide alone — confirms or dismisses each finding and sets its final severity. Fanned out in parallel, one per category or file group. | `/scan` (after the scanner) |
-| **fixer** | Makes the minimal targeted change per finding, runs your tests, and rolls back on failure. Surgical by default, with a structural mode for god-file splits and over-engineering refactors. Fanned out per file group. | `/fix` |
+| **scanner** | Runs the deterministic engine scans, persists findings, returns per-category counts. Makes zero `Read` calls and does no triage — fast and complete. | `/lz-scan` |
+| **assessor** | Deep-triages the four subjective categories (modularity, comment quality, over-engineering, inconsistent patterns) the engine can't decide alone — confirms or dismisses each finding and sets its final severity. Fanned out in parallel, one per category or file group. | `/lz-scan` (after the scanner) |
+| **fixer** | Makes the minimal targeted change per finding, runs your tests, and rolls back on failure. Surgical by default, with a structural mode for god-file splits and over-engineering refactors. Fanned out per file group. | `/lz-fix` |
 
 ### MCP Tools (27)
 
@@ -119,13 +119,13 @@ Each `run_scan` creates a new **run** (its own findings + triage state); previou
 
 The workflow is **scan once, fix over time**: a scan collects findings into a **run**, then you work through fixing them. Get interrupted, sign off, or run out of tokens? Just resume the run and keep going — you never re-scan to re-find what you already found.
 
-Every `/lazy-refactor:scan` starts a new run — a snapshot with its own findings and your triage edits (fixed / ignored / false-positive). Old runs aren't purged, so you can always go back.
+Every `/lazy-refactor:lz-scan` starts a new run — a snapshot with its own findings and your triage edits (fixed / ignored / false-positive). Old runs aren't purged, so you can always go back.
 
-- The **active run** is what `/report`, `/fix`, and `/status` act on. It's stored in `.lazy-refactor/state.db` and **persists across sessions** — reopen the project and you're automatically back in your last run; nothing to resume manually.
-- `/lazy-refactor:list` shows every run with its ID, scanned path, status, and a findings summary, with the active one marked.
-- `/lazy-refactor:resume <id>` switches the active run back to an earlier one — instant, no re-scan — so you can keep reporting and fixing it.
+- The **active run** is what `/lz-report`, `/lz-fix`, and `/lz-status` act on. It's stored in `.lazy-refactor/state.db` and **persists across sessions** — reopen the project and you're automatically back in your last run; nothing to resume manually.
+- `/lazy-refactor:lz-list` shows every run with its ID, scanned path, status, and a findings summary, with the active one marked.
+- `/lazy-refactor:lz-resume <id>` switches the active run back to an earlier one — instant, no re-scan — so you can keep reporting and fixing it.
 
-Need fresh findings because the code changed? Run `/lazy-refactor:scan` again — that's a deliberately separate, new run.
+Need fresh findings because the code changed? Run `/lazy-refactor:lz-scan` again — that's a deliberately separate, new run.
 
 ## What it catches
 

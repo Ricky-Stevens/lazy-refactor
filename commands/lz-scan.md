@@ -1,5 +1,5 @@
 ---
-name: scan
+name: lz-scan
 description: Scan codebase for quality issues
 ---
 
@@ -21,7 +21,7 @@ Scan the codebase for code quality issues using deterministic analysis and targe
 
 ## Behavior
 
-> **Just run it.** A bare `/scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Drive the whole flow (scan → assess → report) to completion and report once. Don't stop to ask questions or check in mid-scan.
+> **Just run it.** A bare `/lz-scan` has everything it needs — don't ask which path or categories; default to the working directory and all categories. Drive the whole flow (scan → assess → report) to completion and report once. Don't stop to ask questions or check in mid-scan.
 
 > **Scope before you triage.** The engine already excludes vendored/minified/generated
 > artifacts and `public/**` by default (assessing those wastes triage budget on noise the
@@ -31,7 +31,7 @@ Scan the codebase for code quality issues using deterministic analysis and targe
 > dismiss the noise. Order is scope → scan → triage.
 
 This command orchestrates two kinds of worker agent — the same command-orchestrates,
-workers-are-leaves pattern `/fix` uses. The **scanner** runs the fast deterministic
+workers-are-leaves pattern `/lz-fix` uses. The **scanner** runs the fast deterministic
 scan; the **assessor** deep-triages the four subjective categories in parallel. The
 workers never dispatch each other — *this command* fans them out.
 
@@ -92,7 +92,7 @@ ignored statuses). Previous runs are **not** purged. Use the `run_scan` MCP tool
 findings summary (archived runs hidden by default) — so you can recover the ID of a
 prior session and resume it. `set_active_run <id>` switches to a prior run WITHOUT
 re-scanning (cheap inspect/report); `delete_run <id>` permanently removes a run and
-its findings. The active run persists across sessions, so `/report` and `/fix`
+its findings. The active run persists across sessions, so `/lz-report` and `/lz-fix`
 continue where you left off automatically. `set_run_status` marks a run
 `in-progress`/`complete`/`archived`.
 

@@ -1,5 +1,5 @@
 ---
-name: fix
+name: lz-fix
 description: Apply fixes with test verification
 ---
 
@@ -23,11 +23,11 @@ Apply fixes to code quality issues identified in scans, with test verification a
 - `--dry-run` (optional): Show what would be fixed without making changes.
 - `--yes` (optional): Skip confirmation prompt and proceed automatically.
 
-> **Note:** Non-fixable findings require manual intervention. Use `/report` to review them.
+> **Note:** Non-fixable findings require manual intervention. Use `/lz-report` to review them.
 
 ## Execution Discipline — one gate, then finish the whole run
 
-The user ran `/fix` to get findings fixed. Get them fixed. Bias hard toward completion.
+The user ran `/lz-fix` to get findings fixed. Get them fixed. Bias hard toward completion.
 
 - **There is exactly ONE decision point: the confirmation in step 2.** Ask once, up front, then execute the entire selected set to completion. After the user confirms (or `--yes` is passed), do **not** ask again, re-confirm scope, "re-level", pause to reconsider, or stop to report partial progress and wait for a nudge. Drive every dispatched batch to the end and report once.
 - **Don't re-litigate scope the user already chose.** If they said `all`, fix all of it. Don't shrink the job, propose a smaller subset, or stop midway to suggest deferring — that's the laziness this command exists to avoid.
@@ -54,12 +54,12 @@ The only mid-run stop allowed is a genuine environment failure (e.g. the test co
    false positives concentrate — auto-fixing it across a whole run is how a bulk pass does
    damage. The floor gates *that sweep only*: a specific finding ID and an explicit severity
    target both **bypass** it (deliberate, narrowed scopes). If a user wants the low-confidence
-   tail swept too, they can `/report --minConfidence=0` to review it and fix by ID.
+   tail swept too, they can `/lz-report --minConfidence=0` to review it and fix by ID.
 
    **High/critical are unioned back into the `all` sweep regardless of confidence.** The floor
    exists to gate the *untriaged heuristic* tail — but `high`/`critical` is exactly the tier you
    do **not** want a confidence heuristic to hide. Suppressing it is how a real correctness bug
-   slips a bulk pass — a silent feature-flag misconfiguration once sat below 0.8 and `/fix all`
+   slips a bulk pass — a silent feature-flag misconfiguration once sat below 0.8 and `/lz-fix all`
    skipped it. So for an `all` run, also pull `{ status: "open", fixable: true, severity:
    ["critical","high"] }` with **no `minConfidence`** and union it in. This *adds* findings to the
    set, never widens it toward the low-confidence *low/medium* tail. **Honest caveat:** there is
@@ -175,7 +175,7 @@ The only mid-run stop allowed is a genuine environment failure (e.g. the test co
 
 ## Committing & working-tree hygiene
 
-`/fix` does not commit — the user decides when. When they do ask you to commit the run:
+`/lz-fix` does not commit — the user decides when. When they do ask you to commit the run:
 - **Stage the fix's scope, not the world.** The touched-file set is derivable from the fixed
   findings' locations plus any modules the fixers created. Stage that set; do not `git add -A`
   in a tree that may hold unrelated in-flight work. If the working tree contains changes
